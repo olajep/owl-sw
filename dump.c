@@ -193,17 +193,15 @@ static void
 	[7]			= print_invalid_trace,
 };
 
-int
-main()
+void do_dump(const uint8_t *buf, size_t buf_size)
 {
 	/* TODO: Add support for nested interrupts */
 
 	size_t i = 0, recursion = 0;
 	union out_trace trace, prev[3] = { 0 };
-	const uint8_t *buf = (uint8_t *) &dump;
 
 	/* The first trace could be an mcall from the kernel */
-	memcpy(&trace, &buf[i], min(8, dump_size - i));
+	memcpy(&trace, &buf[i], min(8, buf_size - i));
 	if (trace.kind == TRACE_KIND_SECALL)
 		recursion = 1;
 
@@ -212,8 +210,8 @@ main()
 	prev[1].kind = TRACE_KIND_SECALL;
 	prev[2].kind = TRACE_KIND_SECALL;
 
-	while (i < dump_size) {
-		memcpy(&trace, &buf[i], min(8, dump_size - i));
+	while (i < buf_size) {
+		memcpy(&trace, &buf[i], min(8, buf_size - i));
 
 		if (trace.kind == TRACE_KIND_RETURN) {
 			assert(recursion != 0);
@@ -229,4 +227,11 @@ main()
 
 		i += out_trace_size(trace);
 	}
+}
+
+int
+main()
+{
+	do_dump((const uint8_t *) dump, dump_size);
+	return 0;
 }
