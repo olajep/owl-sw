@@ -2,7 +2,7 @@ all: dump
 
 CFLAGS ?= -Wall -Wextra
 
-dump: dump.c adump.c
+dump: dump.c
 
 clean:
 	rm -f dump

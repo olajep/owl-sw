@@ -3,9 +3,15 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-extern uint64_t dump[];
-extern size_t dump_size;
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <errno.h>
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define max(x,y) (x > y ? x : y)
@@ -193,7 +199,7 @@ static void
 	[7]			= print_invalid_trace,
 };
 
-void do_dump(const uint8_t *buf, size_t buf_size)
+void dump_trace(const uint8_t *buf, size_t buf_size)
 {
 	/* TODO: Add support for nested interrupts */
 
@@ -229,9 +235,52 @@ void do_dump(const uint8_t *buf, size_t buf_size)
 	}
 }
 
-int
-main()
+int map_file(char *path, const void **ptr, size_t *size)
 {
-	do_dump((const uint8_t *) dump, dump_size);
+	const void *mem;
+	int fd, err;
+	struct stat sb;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return fd;
+
+	err = fstat(fd, &sb);
+	if (err < 0)
+		return err;
+
+	mem = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
+	if (mem == MAP_FAILED)
+		return -1;
+
+	*ptr = mem;
+	*size = sb.st_size;
+
+	return fd;
+}
+
+int
+main(int argc, char *argv[])
+{
+	const uint8_t *buf;
+	int fd;
+	size_t buf_size;
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: %s [FILE]\n", argv[0]);
+		exit(EXIT_FAILURE);
+	}
+
+	fd = map_file(argv[1], (const void **) &buf, &buf_size);
+	if (fd < 0) {
+		perror(argv[0]);
+		fprintf(stderr, "usage: %s [FILE]\n", argv[0]);
+		exit(EXIT_FAILURE);
+	}
+
+	dump_trace(buf, buf_size);
+	munmap((void *) buf, buf_size);
+	close(fd);
+
 	return 0;
 }
