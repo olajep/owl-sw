@@ -206,10 +206,23 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	size_t i = 0, recursion = 0;
 	union out_trace trace, prev[3] = { 0 };
 
-	/* The first trace could be an mcall from the kernel */
-	memcpy(&trace, &buf[i], min(8, buf_size - i));
-	if (trace.kind == TRACE_KIND_SECALL)
+	/* Recursion levels:
+	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
+
+	/* The first trace should be a timestamp ... */
+	memcpy(&trace, &buf[0], min(8, buf_size));
+	assert(trace.kind == TRACE_KIND_TIMESTAMP);
+	if (   trace.kind == TRACE_KIND_TIMESTAMP
+	    && buf_size >= out_trace_size(trace) + 4) {
+		/* ... in which case we need to check the second trace ... */
+		memcpy(&trace, &buf[out_trace_size(trace)],
+		       min(8, buf_size - out_trace_size(trace)));
+	}
+	/* ... since the second trace could be a mcall from the OS ... */
+	if (trace.kind == TRACE_KIND_SECALL) {
+		/* ... so we have to adjust the recursion level. */
 		recursion = 1;
+	}
 
 	/* Initialize with sane values */
 	prev[0].kind = TRACE_KIND_UECALL;
