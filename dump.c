@@ -18,10 +18,10 @@
 #define min(x,y) (x > y ? y : x)
 
 #define TRACE_KIND_UECALL	0x0 // Usermode ecall
-#define TRACE_KIND_SECALL	0x2 // Supervisor ecall
-#define TRACE_KIND_EXCEPTION	0x4 // Non-ecall exception / interrupt
-#define TRACE_KIND_TIMESTAMP	0x6 // Full 61-bit timestamp
 #define TRACE_KIND_RETURN	0x1 // Return from either Ecall or Interrupt
+#define TRACE_KIND_SECALL	0x2 // Supervisor ecall
+#define TRACE_KIND_TIMESTAMP	0x3 // Full 61-bit timestamp
+#define TRACE_KIND_EXCEPTION	0x4 // Non-ecall exception / interrupt
 
 typedef long long unsigned int llu_t;
 
@@ -40,17 +40,21 @@ struct return_trace {
 
 struct exception_trace {
 	unsigned kind:3;
-	unsigned timestamp:21;
+	unsigned timestamp:18;
+	unsigned :3; /* reserved */
 	unsigned cause:8;
 } __attribute__((packed));
 
 struct timestamp_trace {
 	unsigned kind:3;
-	unsigned timestamp:29;
+	uint64_t timestamp:61;
 } __attribute__((packed));
 
 union out_trace {
-	unsigned kind:3;
+	struct {
+		unsigned kind:3;
+		unsigned lsb_timestamp:18;
+	} __attribute__ ((packed));
 	struct ecall_trace ecall;
 	struct return_trace ret;
 	struct exception_trace exception;
@@ -66,31 +70,26 @@ out_trace_size(union out_trace trace)
 
 static uint64_t
 timestamp_trace_to_clocks(union out_trace curr, union out_trace prev,
-			  uint64_t prev_absclocks, int timeshift)
+			  uint64_t absclocks)
 {
 	uint64_t currclocks, prevclocks;
-	const int shift = 3;  /* A timestamp trace is only 29 bits of timedata
-			       * so the hardware downshifts it by 3 (discarding
-			       * lower bits) to get the most use of the bits */
-	const int width = 29;
-	const uint64_t mask = (1ULL << (width + shift + timeshift));
+	const int width = 61;
 
-	/* Assume we will never overflow 64 bits */
+	/* Assume we will never overflow 64 bits.
+	 * This translates to >100 years at 5GHz */
 
-	currclocks =
-		(uint64_t) (curr.timestamp.timestamp) << (shift + timeshift);
-	prevclocks =
-		(uint64_t) (prev.timestamp.timestamp) << (shift + timeshift);
+	currclocks = curr.timestamp.timestamp;
+	prevclocks = prev.timestamp.timestamp;
 
 	if (prevclocks >= currclocks) {
-		/* Timestamp wrapped from previous timestamp trace */
-		prev_absclocks += mask;
+		/* Timestamp wrapped */
+		absclocks += (1ULL << width);
 	}
 
-	prev_absclocks &= ~(mask - 1);
-	currclocks     &=  (mask - 1);
+	absclocks  &= ~((1ULL << width) - 1);
+	currclocks &=  ((1ULL << width) - 1);
 
-	return prev_absclocks | currclocks;
+	return absclocks | currclocks;
 }
 
 static void
@@ -232,10 +231,10 @@ static void
 	[TRACE_KIND_UECALL]	= print_uecall_trace,
 	[TRACE_KIND_RETURN]	= print_return_trace,
 	[TRACE_KIND_SECALL]	= print_secall_trace,
-	[3]			= print_invalid_trace,
+	[TRACE_KIND_TIMESTAMP]	= print_timestamp_trace,
 	[TRACE_KIND_EXCEPTION]	= print_exception_trace,
 	[5]			= print_invalid_trace,
-	[TRACE_KIND_TIMESTAMP]	= print_timestamp_trace,
+	[6]			= print_invalid_trace,
 	[7]			= print_invalid_trace,
 };
 
@@ -246,7 +245,7 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	size_t i = 0, recursion = 0;
 	union out_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
 	uint64_t absclocks = 0;
-	int timeshift = 0;
+	unsigned prev_lsb_timestamp = 0;
 
 	/* Recursion levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
@@ -274,11 +273,18 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	while (i < buf_size) {
 		memcpy(&trace, &buf[i], min(8, buf_size - i));
 
+		if (prev_lsb_timestamp >= trace.lsb_timestamp) {
+			/* Timestamp wrapped */
+			absclocks += (1ULL << 18);
+		}
+
 		if (trace.kind == TRACE_KIND_TIMESTAMP) {
 			absclocks = timestamp_trace_to_clocks(trace,
 							      prev_timestamp,
-							      absclocks,
-							      timeshift);
+							      absclocks);
+			/* Only care about the higher bits.
+			 * The lower bits will be in the individual traces. */
+			absclocks &= ~((1ULL << 18) - 1);
 			prev_timestamp = trace;
 		} else if (trace.kind == TRACE_KIND_RETURN) {
 			assert(recursion != 0);
@@ -292,6 +298,8 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 
 		print_trace[trace.kind](trace, prev[recursion], recursion,
 					absclocks);
+
+		prev_lsb_timestamp = trace.lsb_timestamp;
 
 		i += out_trace_size(trace);
 	}
