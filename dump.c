@@ -23,6 +23,8 @@
 #define TRACE_KIND_TIMESTAMP	0x6 // Full 61-bit timestamp
 #define TRACE_KIND_RETURN	0x1 // Return from either Ecall or Interrupt
 
+typedef long long unsigned int llu_t;
+
 struct ecall_trace {
 	unsigned kind:3;
 	unsigned timestamp:18;
@@ -62,31 +64,53 @@ out_trace_size(union out_trace trace)
 	return (trace.kind & 1) ? 8 : 4;
 }
 
+static uint64_t
+timestamp_trace_to_clocks(union out_trace curr, union out_trace prev,
+			  uint64_t prev_absclocks, int timeshift)
+{
+	uint64_t absclocks, currclocks, prevclocks;
+
+	/* Assume we will never overflow 64 bits */
+
+	currclocks = (uint64_t) (curr.timestamp.timestamp) << (3 + timeshift);
+	prevclocks = (uint64_t) (prev.timestamp.timestamp) << (3 + timeshift);
+
+	if (prevclocks >= currclocks) {
+		/* overflow */
+		currclocks += 1ULL << (18 + 3 + timeshift);
+	}
+	assert(currclocks > prevclocks);
+
+	return prev_absclocks + currclocks;
+}
+
 static void
-print_uecall_trace(union out_trace trace, union out_trace from, size_t level)
+print_uecall_trace(union out_trace trace, union out_trace from, size_t level,
+		   uint64_t absclocks)
 {
 	(void) from;
 	(void) level;
 
 	/* TODO: Support hcall if we add support for it in H/W */
-	printf("@=[%020u] ecall\t\tfunction=[%05d]\n",
-	       trace.ecall.timestamp, trace.ecall.regval);
+	printf("@=[%020llu] ecall\t\tfunction=[%05d]\n",
+	       (llu_t) absclocks | trace.ecall.timestamp, trace.ecall.regval);
 }
 
 static void
-print_secall_trace(union out_trace trace, union out_trace from, size_t level)
+print_secall_trace(union out_trace trace, union out_trace from, size_t level,
+		   uint64_t absclocks)
 {
 	(void) from;
 	(void) level;
 
 	/* TODO: Support hcall if we add support for it in H/W */
-	printf("@=[%020u] mcall\t\tfunction=[%05d]\n",
-	       trace.ecall.timestamp, trace.ecall.regval);
+	printf("@=[%020llu] mcall\t\tfunction=[%05d]\n",
+	       (llu_t) absclocks | trace.ecall.timestamp, trace.ecall.regval);
 }
 
-
 static void
-print_return_trace(union out_trace trace, union out_trace from, size_t level)
+print_return_trace(union out_trace trace, union out_trace from, size_t level,
+		   uint64_t absclocks)
 {
 	(void) level;
 
@@ -102,13 +126,14 @@ print_return_trace(union out_trace trace, union out_trace from, size_t level)
 		printf("return trace kind=%d\n", trace.kind);
 		return;
 	}
-	printf("@=[%020u] %s\t\tpc=[%08x] retval=[%05d]\n",
-	       trace.ret.timestamp, name, trace.ret.pc,
+	printf("@=[%020llu] %s\t\tpc=[%08x] retval=[%05d]\n",
+	       (llu_t) absclocks | trace.ret.timestamp, name, trace.ret.pc,
 	       trace.ret.regval);
 }
 
 static void
-print_exception_trace(union out_trace trace, union out_trace from, size_t level)
+print_exception_trace(union out_trace trace, union out_trace from, size_t level,
+		      uint64_t absclocks)
 {
 	(void)level;
 	(void)from;
@@ -163,21 +188,25 @@ print_exception_trace(union out_trace trace, union out_trace from, size_t level)
 	}
 	name = name ? : "???";
 
-	printf("@=[%020u] %s\t%s=[0x%03x] name=%s\n",
-	       trace.exception.timestamp, type, desc, cause, name);
+	printf("@=[%020llu] %s\t%s=[0x%03x] name=%s\n",
+	       (llu_t) absclocks | trace.exception.timestamp, type, desc,
+	       cause, name);
 }
 
 static void
-print_timestamp_trace(union out_trace trace, union out_trace from, size_t level)
+print_timestamp_trace(union out_trace trace, union out_trace from, size_t level,
+		      uint64_t absclocks)
 {
 	(void)level;
 	(void)from;
 
-	printf("@=[%020u] timestamp\n", trace.timestamp.timestamp);
+	printf("@=[%020llu] timestamp\n",
+	       (llu_t) absclocks | trace.timestamp.timestamp);
 }
 
 static void
-print_invalid_trace(union out_trace trace, union out_trace from, size_t level)
+print_invalid_trace(union out_trace trace, union out_trace from, size_t level,
+		    uint64_t absclocks)
 {
 	(void)from;
 	(void)level;
@@ -188,7 +217,8 @@ print_invalid_trace(union out_trace trace, union out_trace from, size_t level)
 }
 
 static void
-(* const print_trace[8]) (union out_trace, union out_trace, size_t) = {
+(* const print_trace[8]) (union out_trace, union out_trace, size_t,
+			  uint64_t) = {
 	[TRACE_KIND_UECALL]	= print_uecall_trace,
 	[TRACE_KIND_RETURN]	= print_return_trace,
 	[TRACE_KIND_SECALL]	= print_secall_trace,
@@ -204,7 +234,9 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	/* TODO: Add support for nested interrupts */
 
 	size_t i = 0, recursion = 0;
-	union out_trace trace, prev[3] = { 0 };
+	union out_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
+	uint64_t absclocks = 0;
+	int timeshift = 0;
 
 	/* Recursion levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
@@ -232,17 +264,24 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	while (i < buf_size) {
 		memcpy(&trace, &buf[i], min(8, buf_size - i));
 
-		if (trace.kind == TRACE_KIND_RETURN) {
+		if (trace.kind == TRACE_KIND_TIMESTAMP) {
+			absclocks = timestamp_trace_to_clocks(trace,
+							      prev_timestamp,
+							      absclocks,
+							      timeshift);
+			prev_timestamp = trace;
+		} else if (trace.kind == TRACE_KIND_RETURN) {
 			assert(recursion != 0);
 			if (recursion != 0)
 				recursion--;
-		} else if (trace.kind != TRACE_KIND_TIMESTAMP) {
+		} else {
 			prev[recursion] = trace;
 			recursion++;
 		}
 		assert(recursion < 3);
 
-		print_trace[trace.kind](trace, prev[recursion], recursion);
+		print_trace[trace.kind](trace, prev[recursion], recursion,
+					absclocks);
 
 		i += out_trace_size(trace);
 	}
