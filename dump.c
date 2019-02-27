@@ -68,20 +68,29 @@ static uint64_t
 timestamp_trace_to_clocks(union out_trace curr, union out_trace prev,
 			  uint64_t prev_absclocks, int timeshift)
 {
-	uint64_t absclocks, currclocks, prevclocks;
+	uint64_t currclocks, prevclocks;
+	const int shift = 3;  /* A timestamp trace is only 29 bits of timedata
+			       * so the hardware downshifts it by 3 (discarding
+			       * lower bits) to get the most use of the bits */
+	const int width = 29;
+	const uint64_t mask = (1ULL << (width + shift + timeshift));
 
 	/* Assume we will never overflow 64 bits */
 
-	currclocks = (uint64_t) (curr.timestamp.timestamp) << (3 + timeshift);
-	prevclocks = (uint64_t) (prev.timestamp.timestamp) << (3 + timeshift);
+	currclocks =
+		(uint64_t) (curr.timestamp.timestamp) << (shift + timeshift);
+	prevclocks =
+		(uint64_t) (prev.timestamp.timestamp) << (shift + timeshift);
 
 	if (prevclocks >= currclocks) {
-		/* overflow */
-		currclocks += 1ULL << (18 + 3 + timeshift);
+		/* Timestamp wrapped from previous timestamp trace */
+		prev_absclocks += mask;
 	}
-	assert(currclocks > prevclocks);
 
-	return prev_absclocks + currclocks;
+	prev_absclocks &= ~(mask - 1);
+	currclocks     &=  (mask - 1);
+
+	return prev_absclocks | currclocks;
 }
 
 static void
@@ -210,6 +219,7 @@ print_invalid_trace(union out_trace trace, union out_trace from, size_t level,
 {
 	(void)from;
 	(void)level;
+	(void)absclocks;
 	long long data;
 	unsigned kind = trace.kind;
 	memcpy(&data, &trace, sizeof(data));
