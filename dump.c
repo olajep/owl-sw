@@ -250,6 +250,12 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	/* Recursion levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
 
+	/* FIXME: We have a bug in here: The trace can start with more than one
+	 * timestamp. We should either init recursion to -1 or walk the trace
+	 * buffer until we find the first non timestamp trace.
+	 * Also believe things will break if the first trace is an exception
+	 * or interrupt. What initial recursion level do we have then? */
+
 	/* The first trace should be a timestamp ... */
 	memcpy(&trace, &buf[0], min(8, buf_size));
 	assert(trace.kind == TRACE_KIND_TIMESTAMP);
