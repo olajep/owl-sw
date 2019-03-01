@@ -5,13 +5,16 @@ CC  := $(CROSS_COMPILE)$(CC)
 CXX := $(CROSS_COMPILE)$(CXX)
 CPP := $(CROSS_COMPILE)$(CPP)
 
-CFLAGS ?= -Wall -Wextra
+CFLAGS ?= -Wall -Wextra -g -O0
 
-all: dump
+TARGETS = dump owl
+all: $(TARGETS)
 
 dump: dump.o
 
+owl: owl.o
+
 clean:
-	rm -f dump *.o
+	rm -f $(TARGETS) *.o
 
 .PHONY: clean
