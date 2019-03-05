@@ -17,13 +17,32 @@
 #define max(x,y) (x > y ? x : y)
 #define min(x,y) (x > y ? y : x)
 
+#define ERROR_ON(cond, fmt, ...)				\
+do {								\
+	if (cond) {						\
+		fprintf(stderr, "ERROR: " fmt, __VA_ARGS__);	\
+		exit(EXIT_FAILURE);				\
+	}							\
+} while (0)
+
+#define WARN_ON_ONCE(cond, fmt, ...)				\
+do {								\
+	static int _warned = 0;					\
+	if (!_warned && cond) {					\
+		fprintf(stderr, "WARNING: " fmt, __VA_ARGS__);	\
+		_warned = 1;					\
+	}							\
+} while (0)
+
+
+typedef long long unsigned int llu_t;
+
+
 #define TRACE_KIND_UECALL	0x0 // Usermode ecall
 #define TRACE_KIND_RETURN	0x1 // Return from either Ecall or Interrupt
 #define TRACE_KIND_SECALL	0x2 // Supervisor ecall
 #define TRACE_KIND_TIMESTAMP	0x3 // Full 61-bit timestamp
 #define TRACE_KIND_EXCEPTION	0x4 // Non-ecall exception / interrupt
-
-typedef long long unsigned int llu_t;
 
 struct ecall_trace {
 	unsigned kind:3;
@@ -81,7 +100,12 @@ timestamp_trace_to_clocks(union out_trace curr, union out_trace prev,
 	currclocks = curr.timestamp.timestamp;
 	prevclocks = prev.timestamp.timestamp;
 
-	if (prevclocks >= currclocks) {
+	/* Assume that (prevclocks == currclocks) is not a wrap but rather
+	 * triggered by a duplicate timestamp caused by H/W bug. */
+	WARN_ON_ONCE(prevclocks == currclocks,
+		     "Treating timestamp as duplicate t=[%020llu]\n",
+		     (llu_t) curr.timestamp.timestamp);
+	if (prevclocks > currclocks) {
 		/* Timestamp wrapped */
 		absclocks += (1ULL << width);
 	}
@@ -208,8 +232,9 @@ print_timestamp_trace(union out_trace trace, union out_trace from, size_t level,
 	(void)level;
 	(void)from;
 
-	printf("@=[%020llu] timestamp\n",
-	       (llu_t) absclocks | trace.timestamp.timestamp);
+	printf("@=[%020llu] timestamp\tt=[%020llu]\n",
+	       (llu_t) absclocks | trace.timestamp.timestamp,
+	       (llu_t) trace.timestamp.timestamp);
 }
 
 static void
@@ -242,7 +267,8 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 {
 	/* TODO: Add support for nested interrupts */
 
-	size_t i = 0, recursion = 0;
+	size_t i = 0;
+	int recursion = 0;
 	union out_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
 	uint64_t absclocks = 0;
 	unsigned prev_lsb_timestamp = 0;
@@ -250,25 +276,27 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	/* Recursion levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
 
-	/* FIXME: We have a bug in here: The trace can start with more than one
-	 * timestamp. We should either init recursion to -1 or walk the trace
-	 * buffer until we find the first non timestamp trace.
-	 * Also believe things will break if the first trace is an exception
-	 * or interrupt. What initial recursion level do we have then? */
-
-	/* The first trace should be a timestamp ... */
+	/* The first trace should be a timestamp. */
 	memcpy(&trace, &buf[0], min(8, buf_size));
-	assert(trace.kind == TRACE_KIND_TIMESTAMP);
-	if (   trace.kind == TRACE_KIND_TIMESTAMP
-	    && buf_size >= out_trace_size(trace) + 4) {
-		/* ... in which case we need to check the second trace ... */
-		memcpy(&trace, &buf[out_trace_size(trace)],
-		       min(8, buf_size - out_trace_size(trace)));
-	}
-	/* ... since the second trace could be a mcall from the OS ... */
-	if (trace.kind == TRACE_KIND_SECALL) {
-		/* ... so we have to adjust the recursion level. */
-		recursion = 1;
+	ERROR_ON(trace.kind != TRACE_KIND_TIMESTAMP,
+		 "%s", "First trace is not a timestamp!\n");
+	i += out_trace_size(trace);
+
+	/* Walk trace buffer to determine initial recursion level. */
+	for (; i < buf_size; i += out_trace_size(trace)) {
+		memcpy(&trace, &buf[i], min(8, buf_size - i));
+
+		switch (trace.kind) {
+		case TRACE_KIND_SECALL:
+		case TRACE_KIND_EXCEPTION:
+			recursion++;
+		case TRACE_KIND_UECALL:
+			break;
+		case TRACE_KIND_RETURN:
+			recursion++;
+		default: continue;
+		}
+		break;
 	}
 
 	/* Initialize with sane values */
@@ -276,7 +304,7 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	prev[1].kind = TRACE_KIND_SECALL;
 	prev[2].kind = TRACE_KIND_SECALL;
 
-	while (i < buf_size) {
+	for (i = 0; i < buf_size; i += out_trace_size(trace)) {
 		memcpy(&trace, &buf[i], min(8, buf_size - i));
 
 		if (prev_lsb_timestamp >= trace.lsb_timestamp) {
@@ -306,8 +334,6 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 					absclocks);
 
 		prev_lsb_timestamp = trace.lsb_timestamp;
-
-		i += out_trace_size(trace);
 	}
 }
 
@@ -341,6 +367,10 @@ main(int argc, char *argv[])
 	const uint8_t *buf;
 	int fd;
 	size_t buf_size;
+
+	/* Disable line buffering */
+	setbuf(stdout, NULL);
+	setbuf(stderr, NULL);
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: %s [FILE]\n", argv[0]);
