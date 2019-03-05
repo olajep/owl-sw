@@ -105,6 +105,8 @@ do_dump(struct options *options, struct state *state)
 		ret = 2;
 		goto free_tracebuf;
 	}
+	memset(header.tracebuf, 0, 65536);
+	memset(header.metadatabuf, 0, 65536);
 
 	ret = ioctl(state->fd, OWL_IOCTL_DUMP, &header);
 	if (ret) {
