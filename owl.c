@@ -92,7 +92,7 @@ do_dump(struct options *options, struct state *state)
 	size_t size;
 	struct owl_trace_header header = { 0 };
 
-	header.tracebuf_size = 65536;
+	header.tracebuf_size = 65536 * 2;
 	header.metadatabuf_size = 65536;
 
 	header.tracebuf = malloc(header.tracebuf_size);
@@ -105,7 +105,7 @@ do_dump(struct options *options, struct state *state)
 		ret = 2;
 		goto free_tracebuf;
 	}
-	memset(header.tracebuf, 0, 65536);
+	memset(header.tracebuf, 0, 65536 * 2);
 	memset(header.metadatabuf, 0, 65536);
 
 	ret = ioctl(state->fd, OWL_IOCTL_DUMP, &header);
@@ -116,7 +116,7 @@ do_dump(struct options *options, struct state *state)
 
 	/* FIXME: Bug in tracectrl kernel driver.
 	 * It should just return the total trace size. */
-	size = header.trace_entries * sizeof(struct owl_trace_entry_default);
+	size = header.tracebuf_size;
 	fwrite(header.tracebuf, size, 1, stdout);
 
 free_metadatabuf:
