@@ -13,6 +13,14 @@
 #include <sys/mman.h>
 #include <errno.h>
 
+#if 0
+/* When things stabilize and we can move it to the sysroot */
+#include <linux/owl.h>
+#else
+#define __user /* This is stripped from uapi headers by linux */
+#include "owl.h"
+#endif
+
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define max(x,y) (x > y ? x : y)
 #define min(x,y) (x > y ? y : x)
@@ -34,61 +42,17 @@ do {								\
 	}							\
 } while (0)
 
-
 typedef long long unsigned int llu_t;
-
-
-#define TRACE_KIND_UECALL	0x0 // Usermode ecall
-#define TRACE_KIND_RETURN	0x1 // Return from either Ecall or Interrupt
-#define TRACE_KIND_SECALL	0x2 // Supervisor ecall
-#define TRACE_KIND_TIMESTAMP	0x3 // Full 61-bit timestamp
-#define TRACE_KIND_EXCEPTION	0x4 // Non-ecall exception / interrupt
-
-struct ecall_trace {
-	unsigned kind:3;
-	unsigned timestamp:18;
-	unsigned regval:11;
-} __attribute__((packed));
-
-struct return_trace {
-	unsigned kind:3;
-	unsigned timestamp:18;
-	unsigned regval:11;
-	unsigned pc:32;
-} __attribute__((packed));
-
-struct exception_trace {
-	unsigned kind:3;
-	unsigned timestamp:18;
-	unsigned :3; /* reserved */
-	unsigned cause:8;
-} __attribute__((packed));
-
-struct timestamp_trace {
-	unsigned kind:3;
-	uint64_t timestamp:61;
-} __attribute__((packed));
-
-union out_trace {
-	struct {
-		unsigned kind:3;
-		unsigned lsb_timestamp:18;
-	} __attribute__ ((packed));
-	struct ecall_trace ecall;
-	struct return_trace ret;
-	struct exception_trace exception;
-	struct timestamp_trace timestamp;
-} __attribute__((packed));
 
 /* Bytes */
 static size_t
-out_trace_size(union out_trace trace)
+owl_trace_size(union owl_trace trace)
 {
 	return (trace.kind & 1) ? 8 : 4;
 }
 
 static uint64_t
-timestamp_trace_to_clocks(union out_trace curr, union out_trace prev,
+timestamp_trace_to_clocks(union owl_trace curr, union owl_trace prev,
 			  uint64_t absclocks)
 {
 	uint64_t currclocks, prevclocks;
@@ -117,7 +81,7 @@ timestamp_trace_to_clocks(union out_trace curr, union out_trace prev,
 }
 
 static void
-print_uecall_trace(union out_trace trace, union out_trace from, size_t level,
+print_uecall_trace(union owl_trace trace, union owl_trace from, size_t level,
 		   uint64_t absclocks)
 {
 	(void) from;
@@ -129,7 +93,7 @@ print_uecall_trace(union out_trace trace, union out_trace from, size_t level,
 }
 
 static void
-print_secall_trace(union out_trace trace, union out_trace from, size_t level,
+print_secall_trace(union owl_trace trace, union owl_trace from, size_t level,
 		   uint64_t absclocks)
 {
 	(void) from;
@@ -141,7 +105,7 @@ print_secall_trace(union out_trace trace, union out_trace from, size_t level,
 }
 
 static void
-print_return_trace(union out_trace trace, union out_trace from, size_t level,
+print_return_trace(union owl_trace trace, union owl_trace from, size_t level,
 		   uint64_t absclocks)
 {
 	(void) level;
@@ -150,9 +114,9 @@ print_return_trace(union out_trace trace, union out_trace from, size_t level,
 	/* TODO: Print time delta */
 	char *name;
 	switch (from.kind) {
-	case TRACE_KIND_UECALL: name = "eret "; break;
-	case TRACE_KIND_SECALL: name = "mret "; break;
-	case TRACE_KIND_EXCEPTION:
+	case OWL_TRACE_KIND_UECALL: name = "eret "; break;
+	case OWL_TRACE_KIND_SECALL: name = "mret "; break;
+	case OWL_TRACE_KIND_EXCEPTION:
 		name = from.exception.cause & 128 ? "iret " : "exret" ; break;
 	default:
 		printf("return trace kind=%d\n", trace.kind);
@@ -164,7 +128,7 @@ print_return_trace(union out_trace trace, union out_trace from, size_t level,
 }
 
 static void
-print_exception_trace(union out_trace trace, union out_trace from, size_t level,
+print_exception_trace(union owl_trace trace, union owl_trace from, size_t level,
 		      uint64_t absclocks)
 {
 	(void)level;
@@ -226,7 +190,7 @@ print_exception_trace(union out_trace trace, union out_trace from, size_t level,
 }
 
 static void
-print_timestamp_trace(union out_trace trace, union out_trace from, size_t level,
+print_timestamp_trace(union owl_trace trace, union owl_trace from, size_t level,
 		      uint64_t absclocks)
 {
 	(void)level;
@@ -238,7 +202,7 @@ print_timestamp_trace(union out_trace trace, union out_trace from, size_t level,
 }
 
 static void
-print_invalid_trace(union out_trace trace, union out_trace from, size_t level,
+print_invalid_trace(union owl_trace trace, union owl_trace from, size_t level,
 		    uint64_t absclocks)
 {
 	(void)from;
@@ -251,13 +215,13 @@ print_invalid_trace(union out_trace trace, union out_trace from, size_t level,
 }
 
 static void
-(* const print_trace[8]) (union out_trace, union out_trace, size_t,
+(* const print_trace[8]) (union owl_trace, union owl_trace, size_t,
 			  uint64_t) = {
-	[TRACE_KIND_UECALL]	= print_uecall_trace,
-	[TRACE_KIND_RETURN]	= print_return_trace,
-	[TRACE_KIND_SECALL]	= print_secall_trace,
-	[TRACE_KIND_TIMESTAMP]	= print_timestamp_trace,
-	[TRACE_KIND_EXCEPTION]	= print_exception_trace,
+	[OWL_TRACE_KIND_UECALL]	= print_uecall_trace,
+	[OWL_TRACE_KIND_RETURN]	= print_return_trace,
+	[OWL_TRACE_KIND_SECALL]	= print_secall_trace,
+	[OWL_TRACE_KIND_TIMESTAMP]	= print_timestamp_trace,
+	[OWL_TRACE_KIND_EXCEPTION]	= print_exception_trace,
 	[5]			= print_invalid_trace,
 	[6]			= print_invalid_trace,
 	[7]			= print_invalid_trace,
@@ -269,7 +233,7 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 
 	size_t i = 0;
 	int recursion = 0;
-	union out_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
+	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
 	uint64_t absclocks = 0;
 	unsigned prev_lsb_timestamp = 0;
 
@@ -278,21 +242,21 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 
 	/* The first trace should be a timestamp. */
 	memcpy(&trace, &buf[0], min(8, buf_size));
-	ERROR_ON(trace.kind != TRACE_KIND_TIMESTAMP,
+	ERROR_ON(trace.kind != OWL_TRACE_KIND_TIMESTAMP,
 		 "%s", "First trace is not a timestamp!\n");
-	i += out_trace_size(trace);
+	i += owl_trace_size(trace);
 
 	/* Walk trace buffer to determine initial recursion level. */
-	for (; i < buf_size; i += out_trace_size(trace)) {
+	for (; i < buf_size; i += owl_trace_size(trace)) {
 		memcpy(&trace, &buf[i], min(8, buf_size - i));
 
 		switch (trace.kind) {
-		case TRACE_KIND_SECALL:
-		case TRACE_KIND_EXCEPTION:
+		case OWL_TRACE_KIND_SECALL:
+		case OWL_TRACE_KIND_EXCEPTION:
 			recursion++;
-		case TRACE_KIND_UECALL:
+		case OWL_TRACE_KIND_UECALL:
 			break;
-		case TRACE_KIND_RETURN:
+		case OWL_TRACE_KIND_RETURN:
 			recursion++;
 		default: continue;
 		}
@@ -300,11 +264,11 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	}
 
 	/* Initialize with sane values */
-	prev[0].kind = TRACE_KIND_UECALL;
-	prev[1].kind = TRACE_KIND_SECALL;
-	prev[2].kind = TRACE_KIND_SECALL;
+	prev[0].kind = OWL_TRACE_KIND_UECALL;
+	prev[1].kind = OWL_TRACE_KIND_SECALL;
+	prev[2].kind = OWL_TRACE_KIND_SECALL;
 
-	for (i = 0; i < buf_size; i += out_trace_size(trace)) {
+	for (i = 0; i < buf_size; i += owl_trace_size(trace)) {
 		memcpy(&trace, &buf[i], min(8, buf_size - i));
 
 		if (prev_lsb_timestamp >= trace.lsb_timestamp) {
@@ -312,7 +276,7 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 			absclocks += (1ULL << 18);
 		}
 
-		if (trace.kind == TRACE_KIND_TIMESTAMP) {
+		if (trace.kind == OWL_TRACE_KIND_TIMESTAMP) {
 			absclocks = timestamp_trace_to_clocks(trace,
 							      prev_timestamp,
 							      absclocks);
@@ -320,7 +284,7 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 			 * The lower bits will be in the individual traces. */
 			absclocks &= ~((1ULL << 18) - 1);
 			prev_timestamp = trace;
-		} else if (trace.kind == TRACE_KIND_RETURN) {
+		} else if (trace.kind == OWL_TRACE_KIND_RETURN) {
 			assert(recursion != 0);
 			if (recursion != 0)
 				recursion--;
