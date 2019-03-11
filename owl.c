@@ -86,27 +86,31 @@ do_dump(struct options *options, struct state *state)
 {
 	(void)options;
 
-	//unsigned long long i, nentries, size;
-	//uint64_t *buf;
 	int ret = 0;
-	size_t size;
+	struct owl_status status = { 0 };
 	struct owl_trace_header header = { 0 };
 
-	header.tracebuf_size = 65536 * 2;
-	header.metadatabuf_size = 65536;
+	ret = ioctl(state->fd, OWL_IOCTL_STATUS, &status);
+	if (ret) {
+		perror("status");
+		return 1;
+	}
 
-	header.tracebuf = malloc(header.tracebuf_size);
+	header.max_tracebuf_size = status.tracebuf_size;
+	header.max_metadata_size = status.metadata_size;
+
+	header.tracebuf = calloc(1, header.max_tracebuf_size);
 	if (!header.tracebuf) {
-		ret = 1;
+		perror("calloc");
+		ret = 2;
 		goto out;
 	}
-	header.metadatabuf = malloc(header.metadatabuf_size);
+	header.metadatabuf = calloc(1, header.max_metadata_size);
 	if (!header.metadatabuf) {
-		ret = 2;
+		perror("calloc");
+		ret = 3;
 		goto free_tracebuf;
 	}
-	memset(header.tracebuf, 0, 65536 * 2);
-	memset(header.metadatabuf, 0, 65536);
 
 	ret = ioctl(state->fd, OWL_IOCTL_DUMP, &header);
 	if (ret) {
@@ -114,10 +118,7 @@ do_dump(struct options *options, struct state *state)
 		goto free_metadatabuf;
 	}
 
-	/* FIXME: Bug in tracectrl kernel driver.
-	 * It should just return the total trace size. */
-	size = header.tracebuf_size;
-	fwrite(header.tracebuf, size, 1, stdout);
+	fwrite(header.tracebuf, header.tracebuf_size, 1, stdout);
 
 free_metadatabuf:
 	free(header.metadatabuf);
