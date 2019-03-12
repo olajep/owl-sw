@@ -51,6 +51,15 @@ owl_trace_size(union owl_trace trace)
 	return (trace.kind & 1) ? 8 : 4;
 }
 
+/* HACK: We should be able to pull exact trace size from hardware */
+static int
+owl_trace_empty_p(union owl_trace trace)
+{
+	const union owl_trace empty = { 0 };
+
+	return memcmp(&trace, &empty, sizeof(empty)) == 0;
+}
+
 static uint64_t
 timestamp_trace_to_clocks(union owl_trace curr, union owl_trace prev,
 			  uint64_t absclocks)
@@ -250,6 +259,11 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	for (; i < buf_size; i += owl_trace_size(trace)) {
 		memcpy(&trace, &buf[i], min(8, buf_size - i));
 
+		/* HACK: We should be able to get the exact size from the
+		   driver.  */
+		if (owl_trace_empty_p(trace))
+			break;
+
 		switch (trace.kind) {
 		case OWL_TRACE_KIND_SECALL:
 		case OWL_TRACE_KIND_EXCEPTION:
@@ -270,6 +284,11 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 
 	for (i = 0; i < buf_size; i += owl_trace_size(trace)) {
 		memcpy(&trace, &buf[i], min(8, buf_size - i));
+
+		/* HACK: We should be able to get the exact size from the
+		   driver. */
+		if (owl_trace_empty_p(trace))
+			break;
 
 		if (prev_lsb_timestamp >= trace.lsb_timestamp) {
 			/* Timestamp wrapped */
