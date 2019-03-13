@@ -16,6 +16,7 @@
 #define __user /* This is stripped from uapi headers by linux */
 #include "owl.h"
 #endif
+#include "owl-user.h"
 
 enum command {
 	CMD_START,
@@ -89,6 +90,7 @@ do_dump(struct options *options, struct state *state)
 	int ret = 0;
 	struct owl_status status = { 0 };
 	struct owl_trace_header header = { 0 };
+	struct owl_trace_file_header file_header = { 0 };
 
 	ret = ioctl(state->fd, OWL_IOCTL_STATUS, &status);
 	if (ret) {
@@ -118,7 +120,15 @@ do_dump(struct options *options, struct state *state)
 		goto free_metadatabuf;
 	}
 
+	file_header.magic		= OWL_TRACE_FILE_HEADER_MAGIC;
+	file_header.trace_format	= header.trace_format;
+	file_header.metadata_format	= header.metadata_format;
+	file_header.tracebuf_size	= header.tracebuf_size;
+	file_header.metadata_size	= header.metadata_size;
+
+	fwrite(&file_header, sizeof(file_header), 1, stdout);
 	fwrite(header.tracebuf, header.tracebuf_size, 1, stdout);
+	fwrite(header.metadatabuf, header.metadata_size, 1, stdout);
 
 free_metadatabuf:
 	free(header.metadatabuf);
