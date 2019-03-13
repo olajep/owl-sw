@@ -20,6 +20,7 @@
 #define __user /* This is stripped from uapi headers by linux */
 #include "owl.h"
 #endif
+#include "owl-user.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define max(x,y) (x > y ? x : y)
@@ -348,8 +349,9 @@ int
 main(int argc, char *argv[])
 {
 	const uint8_t *buf;
+	const struct owl_trace_file_header *file_header;
 	int fd;
-	size_t buf_size;
+	size_t buf_size, trace_size;
 
 	/* Disable line buffering */
 	setbuf(stdout, NULL);
@@ -367,7 +369,16 @@ main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	dump_trace(buf, buf_size);
+	file_header = (const struct owl_trace_file_header *) buf;
+	if (file_header->magic != OWL_TRACE_FILE_HEADER_MAGIC) {
+		fprintf(stderr, "invalid trace\n");
+		exit(EXIT_FAILURE);
+	}
+
+	trace_size = min(buf_size - sizeof(struct owl_trace_file_header),
+			 file_header->tracebuf_size);
+	trace_size = min(trace_size, buf_size); /* overflow check */
+	dump_trace(buf + sizeof (struct owl_trace_file_header), trace_size);
 	munmap((void *) buf, buf_size);
 	close(fd);
 
