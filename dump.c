@@ -227,14 +227,14 @@ print_invalid_trace(union owl_trace trace, union owl_trace from, size_t level,
 static void
 (* const print_trace[8]) (union owl_trace, union owl_trace, size_t,
 			  uint64_t) = {
-	[OWL_TRACE_KIND_UECALL]	= print_uecall_trace,
-	[OWL_TRACE_KIND_RETURN]	= print_return_trace,
-	[OWL_TRACE_KIND_SECALL]	= print_secall_trace,
+	[OWL_TRACE_KIND_UECALL]		= print_uecall_trace,
+	[OWL_TRACE_KIND_RETURN]		= print_return_trace,
+	[OWL_TRACE_KIND_SECALL]		= print_secall_trace,
 	[OWL_TRACE_KIND_TIMESTAMP]	= print_timestamp_trace,
 	[OWL_TRACE_KIND_EXCEPTION]	= print_exception_trace,
-	[5]			= print_invalid_trace,
-	[6]			= print_invalid_trace,
-	[7]			= print_invalid_trace,
+	[5]				= print_invalid_trace,
+	[6]				= print_invalid_trace,
+	[7]				= print_invalid_trace,
 };
 
 void dump_metadata(const struct owl_metadata_entry *metadata,
