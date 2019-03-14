@@ -250,7 +250,7 @@ void dump_metadata(const struct owl_metadata_entry *metadata,
 	}
 }
 
-void dump_trace(const uint8_t *buf, size_t buf_size)
+void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size)
 {
 	/* TODO: Add support for nested interrupts */
 
@@ -264,14 +264,14 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
 
 	/* The first trace should be a timestamp. */
-	memcpy(&trace, &buf[0], min(8, buf_size));
+	memcpy(&trace, &tracebuf[0], min(8, tracebuf_size));
 	ERROR_ON(trace.kind != OWL_TRACE_KIND_TIMESTAMP,
 		 "%s", "First trace is not a timestamp!\n");
 	i += owl_trace_size(trace);
 
 	/* Walk trace buffer to determine initial recursion level. */
-	for (; i < buf_size; i += owl_trace_size(trace)) {
-		memcpy(&trace, &buf[i], min(8, buf_size - i));
+	for (; i < tracebuf_size; i += owl_trace_size(trace)) {
+		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
 
 		/* HACK: We should be able to get the exact size from the
 		   driver.  */
@@ -296,8 +296,8 @@ void dump_trace(const uint8_t *buf, size_t buf_size)
 	prev[1].kind = OWL_TRACE_KIND_SECALL;
 	prev[2].kind = OWL_TRACE_KIND_SECALL;
 
-	for (i = 0; i < buf_size; i += owl_trace_size(trace)) {
-		memcpy(&trace, &buf[i], min(8, buf_size - i));
+	for (i = 0; i < tracebuf_size; i += owl_trace_size(trace)) {
+		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
 
 		/* HACK: We should be able to get the exact size from the
 		   driver. */
