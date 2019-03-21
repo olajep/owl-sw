@@ -17,6 +17,7 @@ struct owl_trace_file_header {
 	uint32_t metadata_format;
 	uint64_t tracebuf_size;
 	uint64_t metadata_size;
+	uint64_t map_info_size;
 } __attribute__((packed));
 
 #if defined(__cplusplus)

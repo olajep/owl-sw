@@ -100,6 +100,7 @@ do_dump(struct options *options, struct state *state)
 
 	header.max_tracebuf_size = status.tracebuf_size;
 	header.max_metadata_size = status.metadata_size;
+	header.max_map_info_size = status.map_info_size;
 
 	header.tracebuf = calloc(1, header.max_tracebuf_size);
 	if (!header.tracebuf) {
@@ -113,11 +114,17 @@ do_dump(struct options *options, struct state *state)
 		ret = 3;
 		goto free_tracebuf;
 	}
+	header.mapinfobuf = calloc(1, header.max_map_info_size);
+	if (!header.mapinfobuf) {
+		perror("calloc");
+		ret = 3;
+		goto free_metadatabuf;
+	}
 
 	ret = ioctl(state->fd, OWL_IOCTL_DUMP, &header);
 	if (ret) {
 		perror("dump");
-		goto free_metadatabuf;
+		goto free_mapinfobuf;
 	}
 
 	file_header.magic		= OWL_TRACE_FILE_HEADER_MAGIC;
@@ -125,11 +132,15 @@ do_dump(struct options *options, struct state *state)
 	file_header.metadata_format	= header.metadata_format;
 	file_header.tracebuf_size	= header.tracebuf_size;
 	file_header.metadata_size	= header.metadata_size;
+	file_header.map_info_size	= header.map_info_size;
 
 	fwrite(&file_header, sizeof(file_header), 1, stdout);
 	fwrite(header.tracebuf, header.tracebuf_size, 1, stdout);
 	fwrite(header.metadatabuf, header.metadata_size, 1, stdout);
+	fwrite(header.mapinfobuf, header.map_info_size, 1, stdout);
 
+free_mapinfobuf:
+	free(header.mapinfobuf);
 free_metadatabuf:
 	free(header.metadatabuf);
 free_tracebuf:
