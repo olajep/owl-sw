@@ -237,28 +237,25 @@ static void
 	[7]				= print_invalid_trace,
 };
 
-void dump_metadata(const struct owl_metadata_entry *metadata,
-		   size_t metadata_size)
+void print_metadata(const struct owl_metadata_entry *entry, uint64_t absclocks)
 {
-	size_t i, nentries = metadata_size / sizeof(*metadata);
-	const struct owl_metadata_entry *entry;
-	for (i = 0; i < nentries; i++) {
-		entry = &metadata[i];
-		assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
-		printf("@=[%llu] %s %d\n",
-		       (llu_t) entry->timestamp, entry->comm, (int) entry->cpu);
-	}
+	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
+	printf("@=[%020llu] sched\t\tcomm=[%s] until=[%020llu] cpu=[%d]\n",
+	       (llu_t) absclocks,  entry->comm, (llu_t) entry->timestamp, (int) entry->cpu);
 }
 
-void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size)
+void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
+		const struct owl_metadata_entry *metadata, size_t metadata_size)
 {
 	/* TODO: Add support for nested interrupts */
 
-	size_t i = 0;
+	size_t i = 0, nmetaentries = metadata_size / sizeof(*metadata);
 	int recursion = 0;
 	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
-	uint64_t absclocks = 0;
+	uint64_t absclocks = 0, next_sched;
 	unsigned prev_lsb_timestamp = 0;
+	const struct owl_metadata_entry *next_task = &metadata[0];
+	const struct owl_metadata_entry *metadata_end = &metadata[nmetaentries];
 
 	/* Recursion levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
@@ -296,6 +293,14 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size)
 	prev[1].kind = OWL_TRACE_KIND_SECALL;
 	prev[2].kind = OWL_TRACE_KIND_SECALL;
 
+	/* Print first scheduled task */
+	if (next_task < metadata_end) {
+		memcpy(&trace, &tracebuf[0], min(8, tracebuf_size));
+		print_metadata(next_task, trace.timestamp.timestamp);
+		next_sched = next_task->timestamp;
+		next_task++;
+	}
+
 	for (i = 0; i < tracebuf_size; i += owl_trace_size(trace)) {
 		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
 
@@ -307,6 +312,14 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size)
 		if (prev_lsb_timestamp >= trace.lsb_timestamp) {
 			/* Timestamp wrapped */
 			absclocks += (1ULL << 18);
+		}
+
+		if (absclocks > next_sched) {
+			if (next_task < metadata_end) {
+				print_metadata(next_task, next_sched);
+				next_sched = next_task->timestamp;
+				next_task++;
+			}
 		}
 
 		if (trace.kind == OWL_TRACE_KIND_TIMESTAMP) {
@@ -361,11 +374,11 @@ int map_file(char *path, const void **ptr, size_t *size)
 int
 main(int argc, char *argv[])
 {
-	const uint8_t *buf;
+	const uint8_t *buf, *tracebuf;
 	const struct owl_trace_file_header *file_header;
 	const struct owl_metadata_entry *metadata;
 	int fd;
-	size_t buf_size, trace_size, metadata_size;
+	size_t buf_size, tracebuf_size, metadata_size;
 
 	/* Disable line buffering */
 	setbuf(stdout, NULL);
@@ -389,13 +402,12 @@ main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	trace_size = file_header->tracebuf_size;
-	dump_trace(buf + sizeof(struct owl_trace_file_header), trace_size);
-
+	tracebuf = (const uint8_t *) &file_header[1];
+	tracebuf_size = file_header->tracebuf_size;
+	metadata =
+		(const struct owl_metadata_entry *) (tracebuf + tracebuf_size);
 	metadata_size = file_header->metadata_size;
-	metadata = (const struct owl_metadata_entry *)
-		(buf + sizeof(struct owl_trace_file_header) + trace_size);
-	dump_metadata(metadata, metadata_size);
+	dump_trace(tracebuf, tracebuf_size, metadata, metadata_size);
 
 	munmap((void *) buf, buf_size);
 	close(fd);
