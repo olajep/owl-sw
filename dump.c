@@ -90,60 +90,56 @@ timestamp_trace_to_clocks(union owl_trace curr, union owl_trace prev,
 	return absclocks | currclocks;
 }
 
-static void
-print_uecall_trace(union owl_trace trace, union owl_trace from, size_t level,
-		   uint64_t absclocks)
-{
-	(void) from;
-	(void) level;
+struct print_args {
+	union owl_trace trace;
+	union owl_trace from;
+	size_t level;
+	uint64_t absclocks;
+	const struct owl_map_info *maps;
+	size_t num_map_entries;
+};
 
+static void
+print_uecall_trace(struct print_args *a)
+{
 	/* TODO: Support hcall if we add support for it in H/W */
 	printf("@=[%020llu] ecall\t\tfunction=[%05d]\n",
-	       (llu_t) absclocks | trace.ecall.timestamp, trace.ecall.regval);
+	       (llu_t) a->absclocks | a->trace.ecall.timestamp,
+	       a->trace.ecall.regval);
 }
 
 static void
-print_secall_trace(union owl_trace trace, union owl_trace from, size_t level,
-		   uint64_t absclocks)
+print_secall_trace(struct print_args *a)
 {
-	(void) from;
-	(void) level;
-
 	/* TODO: Support hcall if we add support for it in H/W */
 	printf("@=[%020llu] mcall\t\tfunction=[%05d]\n",
-	       (llu_t) absclocks | trace.ecall.timestamp, trace.ecall.regval);
+	       (llu_t) a->absclocks | a->trace.ecall.timestamp,
+	       a->trace.ecall.regval);
 }
 
 static void
-print_return_trace(union owl_trace trace, union owl_trace from, size_t level,
-		   uint64_t absclocks)
+print_return_trace(struct print_args *a)
 {
-	(void) level;
-
 	/* TODO: Support hcall if we add support for it in H/W */
 	/* TODO: Print time delta */
 	char *name;
-	switch (from.kind) {
+	switch (a->from.kind) {
 	case OWL_TRACE_KIND_UECALL: name = "eret "; break;
 	case OWL_TRACE_KIND_SECALL: name = "mret "; break;
 	case OWL_TRACE_KIND_EXCEPTION:
-		name = from.exception.cause & 128 ? "iret " : "exret" ; break;
+		name = a->from.exception.cause & 128 ? "iret " : "exret"; break;
 	default:
-		printf("return trace kind=%d\n", trace.kind);
+		printf("return trace kind=%d\n", a->trace.kind);
 		return;
 	}
 	printf("@=[%020llu] %s\t\tpc=[%08x] retval=[%05d]\n",
-	       (llu_t) absclocks | trace.ret.timestamp, name, trace.ret.pc,
-	       trace.ret.regval);
+	       (llu_t) a->absclocks | a->trace.ret.timestamp, name,
+	       a->trace.ret.pc, a->trace.ret.regval);
 }
 
 static void
-print_exception_trace(union owl_trace trace, union owl_trace from, size_t level,
-		      uint64_t absclocks)
+print_exception_trace(struct print_args *a)
 {
-	(void)level;
-	(void)from;
-
 	/* Exception causes */
 	const char *causes[16] = {
 		[0x0] = "misaligned_fetch",
@@ -178,7 +174,7 @@ print_exception_trace(union owl_trace trace, union owl_trace from, size_t level,
 	};
 
 	const char *type, *name, *desc;
-	unsigned cause = trace.exception.cause;
+	unsigned cause = a->trace.exception.cause;
 
 	if (cause & 128) {
 		cause &= ~128;
@@ -195,38 +191,29 @@ print_exception_trace(union owl_trace trace, union owl_trace from, size_t level,
 	name = name ? : "???";
 
 	printf("@=[%020llu] %s\t%s=[0x%03x] name=%s\n",
-	       (llu_t) absclocks | trace.exception.timestamp, type, desc,
+	       (llu_t) a->absclocks | a->trace.exception.timestamp, type, desc,
 	       cause, name);
 }
 
 static void
-print_timestamp_trace(union owl_trace trace, union owl_trace from, size_t level,
-		      uint64_t absclocks)
+print_timestamp_trace(struct print_args *a)
 {
-	(void)level;
-	(void)from;
-
 	printf("@=[%020llu] timestamp\tt=[%020llu]\n",
-	       (llu_t) absclocks | trace.timestamp.timestamp,
-	       (llu_t) trace.timestamp.timestamp);
+	       (llu_t) a->absclocks | a->trace.timestamp.timestamp,
+	       (llu_t) a->trace.timestamp.timestamp);
 }
 
 static void
-print_invalid_trace(union owl_trace trace, union owl_trace from, size_t level,
-		    uint64_t absclocks)
+print_invalid_trace(struct print_args *a)
 {
-	(void)from;
-	(void)level;
-	(void)absclocks;
 	long long data;
-	unsigned kind = trace.kind;
-	memcpy(&data, &trace, sizeof(data));
+	unsigned kind = a->trace.kind;
+	memcpy(&data, &a->trace, sizeof(data));
 	printf("INVALID TRACE kind=%u data=[%016llx]\n", kind, data);
 }
 
 static void
-(* const print_trace[8]) (union owl_trace, union owl_trace, size_t,
-			  uint64_t) = {
+(* const print_trace[8]) (struct print_args *a) = {
 	[OWL_TRACE_KIND_UECALL]		= print_uecall_trace,
 	[OWL_TRACE_KIND_RETURN]		= print_return_trace,
 	[OWL_TRACE_KIND_SECALL]		= print_secall_trace,
@@ -245,17 +232,21 @@ void print_metadata(const struct owl_metadata_entry *entry, uint64_t absclocks)
 }
 
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
-		const struct owl_metadata_entry *metadata, size_t metadata_size)
+		const struct owl_metadata_entry *metadata, size_t metadata_size,
+		const struct owl_map_info *maps, size_t map_info_size)
 {
 	/* TODO: Add support for nested interrupts */
 
-	size_t i = 0, nmetaentries = metadata_size / sizeof(*metadata);
+	size_t i = 0;
+	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
+	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int recursion = 0;
 	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
 	uint64_t absclocks = 0, next_sched;
 	unsigned prev_lsb_timestamp = 0;
 	const struct owl_metadata_entry *next_task = &metadata[0];
-	const struct owl_metadata_entry *metadata_end = &metadata[nmetaentries];
+	const struct owl_metadata_entry
+		*metadata_end = &metadata[num_meta_entries];
 
 	/* Recursion levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
@@ -340,8 +331,17 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		}
 		assert(recursion < 3);
 
-		print_trace[trace.kind](trace, prev[recursion], recursion,
-					absclocks);
+		{
+			struct print_args args = {
+				.trace			= trace,
+				.from			= prev[recursion],
+				.level			= recursion,
+				.absclocks		= absclocks,
+				.maps			= maps,
+				.num_map_entries	= num_map_entries
+			};
+			print_trace[trace.kind](&args);
+		}
 
 		prev_lsb_timestamp = trace.lsb_timestamp;
 	}
@@ -377,8 +377,9 @@ main(int argc, char *argv[])
 	const uint8_t *buf, *tracebuf;
 	const struct owl_trace_file_header *file_header;
 	const struct owl_metadata_entry *metadata;
+	const struct owl_map_info *map_info;
 	int fd;
-	size_t buf_size, tracebuf_size, metadata_size;
+	size_t buf_size, tracebuf_size, metadata_size, map_info_size;
 
 	/* Disable line buffering */
 	setbuf(stdout, NULL);
@@ -407,7 +408,12 @@ main(int argc, char *argv[])
 	metadata =
 		(const struct owl_metadata_entry *) (tracebuf + tracebuf_size);
 	metadata_size = file_header->metadata_size;
-	dump_trace(tracebuf, tracebuf_size, metadata, metadata_size);
+	map_info = (const struct owl_map_info *)
+		(uintptr_t) metadata + metadata_size;
+	map_info_size = file_header->map_info_size;
+	dump_trace(tracebuf, tracebuf_size,
+		   metadata, metadata_size,
+		   map_info, map_info_size);
 
 	munmap((void *) buf, buf_size);
 	close(fd);
