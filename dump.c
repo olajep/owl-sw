@@ -97,6 +97,7 @@ struct print_args {
 	uint64_t absclocks;
 	const struct owl_map_info *maps;
 	size_t num_map_entries;
+	const struct owl_metadata_entry *current_task;
 };
 
 static void
@@ -117,12 +118,37 @@ print_secall_trace(struct print_args *a)
 	       a->trace.ecall.regval);
 }
 
+struct map_search_key {
+	int pid;
+	uint32_t pc;
+};
+struct owl_map_info *find_map(const struct map_search_key *key,
+			      const struct owl_map_info *maps,
+			      size_t num_map_entries);
+
 static void
 print_return_trace(struct print_args *a)
 {
 	/* TODO: Support hcall if we add support for it in H/W */
 	/* TODO: Print time delta */
-	char *name;
+	const char *name;
+
+	const char *binary = "'none'";
+	uint64_t offset = a->trace.ret.pc;
+
+	struct owl_map_info *map;
+	struct map_search_key key = {
+		.pid = a->current_task->pid,
+		.pc = a->trace.ret.pc
+	};
+	map = find_map(&key, a->maps, a->num_map_entries);;
+
+	if (map) {
+		binary = map->path;
+		/* PC is only 32 bits but vm_start is 64 bits */
+		offset = a->trace.ret.pc - (uint32_t) map->vm_start;
+	}
+
 	switch (a->from.kind) {
 	case OWL_TRACE_KIND_UECALL: name = "eret "; break;
 	case OWL_TRACE_KIND_SECALL: name = "mret "; break;
@@ -132,9 +158,9 @@ print_return_trace(struct print_args *a)
 		printf("return trace kind=%d\n", a->trace.kind);
 		return;
 	}
-	printf("@=[%020llu] %s\t\tpc=[%08x] retval=[%05d]\n",
+	printf("@=[%020llu] %s\t\tpc=[%08x] retval=[%05d] file=[%s+0x%llx]\n",
 	       (llu_t) a->absclocks | a->trace.ret.timestamp, name,
-	       a->trace.ret.pc, a->trace.ret.regval);
+	       a->trace.ret.pc, a->trace.ret.regval, binary, (llu_t) offset);
 }
 
 static void
@@ -231,9 +257,71 @@ void print_metadata(const struct owl_metadata_entry *entry, uint64_t absclocks)
 	       (llu_t) absclocks,  entry->comm, (llu_t) entry->timestamp, (int) entry->cpu);
 }
 
+int find_compare_maps(const void *_key, const void *_elem)
+{
+	const struct map_search_key *key = _key;
+	const struct owl_map_info *elem = _elem;
+	uint32_t vm_start, vm_end;
+
+	/* key->pc is only 32 bits (and not shifted TODO IN hardware)
+	 * so we hope for a mapping with no duplicates */
+	vm_start = (uint32_t) elem->vm_start;
+	vm_end = (uint32_t) elem->vm_end;
+
+	if (key->pid < elem->pid)
+		return -1;
+	if (key->pid > elem->pid)
+		return 1;
+
+	if (key->pc < vm_start)
+		return -1;
+	if (key->pc > vm_end)
+		return 1;
+
+	return 0;
+}
+
+struct owl_map_info *
+find_map(const struct map_search_key *key,
+	 const struct owl_map_info *maps, size_t num_map_entries)
+{
+	return bsearch(key, maps, num_map_entries, sizeof(*maps),
+		       find_compare_maps);
+}
+
+int
+sort_compare_maps(const void *_a, const void *_b)
+{
+	const struct owl_map_info *a = _a;
+	const struct owl_map_info *b = _b;
+
+	if (a->pid < b->pid)
+		return -1;
+	if (a->pid > b->pid)
+		return 1;
+
+	if (a->vm_start < b->vm_start)
+		return -1;
+	if (a->vm_start > b->vm_start)
+		return 1;
+
+	if (a->vm_end < b->vm_end)
+		return -1;
+	if (a->vm_end > b->vm_end)
+		return 1;
+
+	return 0;
+}
+
+void
+sort_maps(struct owl_map_info *maps, size_t num_map_entries)
+{
+	qsort(maps, num_map_entries, sizeof(*maps), sort_compare_maps);
+}
+
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		const struct owl_metadata_entry *metadata, size_t metadata_size,
-		const struct owl_map_info *maps, size_t map_info_size)
+		struct owl_map_info *maps, size_t map_info_size)
 {
 	/* TODO: Add support for nested interrupts */
 
@@ -244,9 +332,12 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
 	uint64_t absclocks = 0, next_sched;
 	unsigned prev_lsb_timestamp = 0;
-	const struct owl_metadata_entry *next_task = &metadata[0];
+	const struct owl_metadata_entry *current_task = &metadata[0];
 	const struct owl_metadata_entry
 		*metadata_end = &metadata[num_meta_entries];
+
+	/* Sort the map info so we can binary search it */
+	sort_maps(maps, num_map_entries);
 
 	/* Recursion levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
@@ -285,11 +376,10 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	prev[2].kind = OWL_TRACE_KIND_SECALL;
 
 	/* Print first scheduled task */
-	if (next_task < metadata_end) {
+	if (current_task < metadata_end) {
 		memcpy(&trace, &tracebuf[0], min(8, tracebuf_size));
-		print_metadata(next_task, trace.timestamp.timestamp);
-		next_sched = next_task->timestamp;
-		next_task++;
+		print_metadata(current_task, trace.timestamp.timestamp);
+		next_sched = current_task->timestamp;
 	}
 
 	for (i = 0; i < tracebuf_size; i += owl_trace_size(trace)) {
@@ -306,10 +396,10 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		}
 
 		if (absclocks > next_sched) {
-			if (next_task < metadata_end) {
-				print_metadata(next_task, next_sched);
-				next_sched = next_task->timestamp;
-				next_task++;
+			if (current_task < metadata_end) {
+				current_task++;
+				print_metadata(current_task, next_sched);
+				next_sched = current_task->timestamp;
 			}
 		}
 
@@ -338,7 +428,8 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.level			= recursion,
 				.absclocks		= absclocks,
 				.maps			= maps,
-				.num_map_entries	= num_map_entries
+				.num_map_entries	= num_map_entries,
+				.current_task		= current_task
 			};
 			print_trace[trace.kind](&args);
 		}
@@ -377,7 +468,7 @@ main(int argc, char *argv[])
 	const uint8_t *buf, *tracebuf;
 	const struct owl_trace_file_header *file_header;
 	const struct owl_metadata_entry *metadata;
-	const struct owl_map_info *map_info;
+	struct owl_map_info *map_info;
 	int fd;
 	size_t buf_size, tracebuf_size, metadata_size, map_info_size;
 
@@ -408,7 +499,7 @@ main(int argc, char *argv[])
 	metadata =
 		(const struct owl_metadata_entry *) (tracebuf + tracebuf_size);
 	metadata_size = file_header->metadata_size;
-	map_info = (const struct owl_map_info *)
+	map_info = (struct owl_map_info *)
 		(uintptr_t) metadata + metadata_size;
 	map_info_size = file_header->map_info_size;
 	dump_trace(tracebuf, tracebuf_size,
