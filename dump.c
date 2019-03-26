@@ -136,19 +136,6 @@ print_return_trace(struct print_args *a)
 	const char *binary = "'none'";
 	uint64_t offset = a->trace.ret.pc;
 
-	struct owl_map_info *map;
-	struct map_search_key key = {
-		.pid = a->current_task->pid,
-		.pc = a->trace.ret.pc
-	};
-	map = find_map(&key, a->maps, a->num_map_entries);;
-
-	if (map) {
-		binary = map->path;
-		/* PC is only 32 bits but vm_start is 64 bits */
-		offset = a->trace.ret.pc - (uint32_t) map->vm_start;
-	}
-
 	switch (a->from.kind) {
 	case OWL_TRACE_KIND_UECALL: name = "eret "; break;
 	case OWL_TRACE_KIND_SECALL: name = "mret "; break;
@@ -158,6 +145,38 @@ print_return_trace(struct print_args *a)
 		printf("return trace kind=%d\n", a->trace.kind);
 		return;
 	}
+
+	if (a->level == 0) {
+		struct owl_map_info *map;
+		struct map_search_key key = {
+			.pid = a->current_task->pid,
+			.pc = a->trace.ret.pc
+		};
+
+		assert(a->from.kind == OWL_TRACE_KIND_UECALL ||
+		       a->from.kind == OWL_TRACE_KIND_EXCEPTION);
+
+		map = find_map(&key, a->maps, a->num_map_entries);;
+
+		if (map) {
+			/* The Linux kernels file_path() writes the string to
+			 * the buffer backwards and pads the beginning with
+			 * zeroes */
+			binary = &map->path[OWL_PATH_MAX - 2];
+			while (*binary != '\0' && binary != map->path) {
+				if (binary[-1] == '\0')
+					break;
+				binary--;
+			}
+			/* PC is only 32 bits but vm_start is 64 bits */
+			offset = a->trace.ret.pc - (uint32_t) map->vm_start;
+		}
+	} else {
+		binary = "'vmlinux'";
+		/* offset = a->trace.ret.pc |
+		 * 		$(objdump -f vmlinux | grep "start address) */
+	}
+
 	printf("@=[%020llu] %s\t\tpc=[%08x] retval=[%05d] file=[%s+0x%llx]\n",
 	       (llu_t) a->absclocks | a->trace.ret.timestamp, name,
 	       a->trace.ret.pc, a->trace.ret.regval, binary, (llu_t) offset);
