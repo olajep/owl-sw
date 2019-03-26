@@ -500,7 +500,7 @@ main(int argc, char *argv[])
 		(const struct owl_metadata_entry *) (tracebuf + tracebuf_size);
 	metadata_size = file_header->metadata_size;
 	map_info = (struct owl_map_info *)
-		(uintptr_t) metadata + metadata_size;
+		(((uintptr_t) metadata) + metadata_size);
 	map_info_size = file_header->map_info_size;
 	dump_trace(tracebuf, tracebuf_size,
 		   metadata, metadata_size,
