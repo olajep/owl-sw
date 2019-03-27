@@ -346,7 +346,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int recursion = 0;
 	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
-	uint64_t absclocks = 0, msbclocks = 0, next_sched;
+	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0, next_sched;
 	unsigned prev_lsb_timestamp = 0;
 	const struct owl_metadata_entry *current_task = &metadata[0];
 	const struct owl_metadata_entry
@@ -419,6 +419,8 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			msbclocks += (1ULL << 18);
 		}
 		absclocks = msbclocks | trace.lsb_timestamp;
+		prev_lsb_timestamp = trace.lsb_timestamp;
+		prev_absclocks = absclocks;
 
 		if (absclocks > next_sched) {
 			if (current_task < metadata_end) {
@@ -428,15 +430,15 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			}
 		}
 
-		if (trace.kind == OWL_TRACE_KIND_RETURN) {
-			assert(recursion != 0);
-			if (recursion != 0)
+		if (trace.kind != OWL_TRACE_KIND_TIMESTAMP) {
+			if (trace.kind == OWL_TRACE_KIND_RETURN)
 				recursion--;
-		} else if (trace.kind != OWL_TRACE_KIND_TIMESTAMP) {
-			prev[recursion] = trace;
-			recursion++;
+			else {
+				prev[recursion] = trace;
+				recursion++;
+			}
 		}
-		assert(recursion < 3);
+		assert(0 <= recursion && recursion < 3);
 
 		{
 			struct print_args args = {
@@ -450,8 +452,6 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			};
 			print_trace[trace.kind](&args);
 		}
-
-		prev_lsb_timestamp = trace.lsb_timestamp;
 	}
 }
 
