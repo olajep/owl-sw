@@ -414,7 +414,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			msbclocks += (1ULL << 18);
 		}
 
-		if (msbclocks > next_sched) {
+		if ((msbclocks | trace.lsb_timestamp) > next_sched) {
 			if (current_task < metadata_end) {
 				current_task++;
 				print_metadata(current_task, next_sched);
