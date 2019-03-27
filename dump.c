@@ -94,7 +94,7 @@ struct print_args {
 	union owl_trace trace;
 	union owl_trace from;
 	size_t level;
-	uint64_t absclocks;
+	uint64_t msbclocks; /* most significant bits */
 	const struct owl_map_info *maps;
 	size_t num_map_entries;
 	const struct owl_metadata_entry *current_task;
@@ -105,7 +105,7 @@ print_uecall_trace(struct print_args *a)
 {
 	/* TODO: Support hcall if we add support for it in H/W */
 	printf("@=[%020llu] ecall\t\tfunction=[%05d]\n",
-	       (llu_t) a->absclocks | a->trace.ecall.timestamp,
+	       (llu_t) a->msbclocks | a->trace.ecall.timestamp,
 	       a->trace.ecall.regval);
 }
 
@@ -114,7 +114,7 @@ print_secall_trace(struct print_args *a)
 {
 	/* TODO: Support hcall if we add support for it in H/W */
 	printf("@=[%020llu] mcall\t\tfunction=[%05d]\n",
-	       (llu_t) a->absclocks | a->trace.ecall.timestamp,
+	       (llu_t) a->msbclocks | a->trace.ecall.timestamp,
 	       a->trace.ecall.regval);
 }
 
@@ -178,7 +178,7 @@ print_return_trace(struct print_args *a)
 	}
 
 	printf("@=[%020llu] %s\t\tpc=[%08x] retval=[%05d] file=[%s+0x%llx]\n",
-	       (llu_t) a->absclocks | a->trace.ret.timestamp, name,
+	       (llu_t) a->msbclocks | a->trace.ret.timestamp, name,
 	       a->trace.ret.pc, a->trace.ret.regval, binary, (llu_t) offset);
 }
 
@@ -236,7 +236,7 @@ print_exception_trace(struct print_args *a)
 	name = name ? : "???";
 
 	printf("@=[%020llu] %s\t%s=[0x%03x] name=%s\n",
-	       (llu_t) a->absclocks | a->trace.exception.timestamp, type, desc,
+	       (llu_t) a->msbclocks | a->trace.exception.timestamp, type, desc,
 	       cause, name);
 }
 
@@ -244,7 +244,7 @@ static void
 print_timestamp_trace(struct print_args *a)
 {
 	printf("@=[%020llu] timestamp\tt=[%020llu]\n",
-	       (llu_t) a->absclocks | a->trace.timestamp.timestamp,
+	       (llu_t) a->msbclocks | a->trace.timestamp.timestamp,
 	       (llu_t) a->trace.timestamp.timestamp);
 }
 
@@ -349,7 +349,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int recursion = 0;
 	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
-	uint64_t absclocks = 0, next_sched;
+	uint64_t msbclocks = 0, next_sched;
 	unsigned prev_lsb_timestamp = 0;
 	const struct owl_metadata_entry *current_task = &metadata[0];
 	const struct owl_metadata_entry
@@ -411,10 +411,10 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 
 		if (prev_lsb_timestamp >= trace.lsb_timestamp) {
 			/* Timestamp wrapped */
-			absclocks += (1ULL << 18);
+			msbclocks += (1ULL << 18);
 		}
 
-		if (absclocks > next_sched) {
+		if (msbclocks > next_sched) {
 			if (current_task < metadata_end) {
 				current_task++;
 				print_metadata(current_task, next_sched);
@@ -423,12 +423,12 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		}
 
 		if (trace.kind == OWL_TRACE_KIND_TIMESTAMP) {
-			absclocks = timestamp_trace_to_clocks(trace,
+			msbclocks = timestamp_trace_to_clocks(trace,
 							      prev_timestamp,
-							      absclocks);
+							      msbclocks);
 			/* Only care about the higher bits.
 			 * The lower bits will be in the individual traces. */
-			absclocks &= ~((1ULL << 18) - 1);
+			msbclocks &= ~((1ULL << 18) - 1);
 			prev_timestamp = trace;
 		} else if (trace.kind == OWL_TRACE_KIND_RETURN) {
 			assert(recursion != 0);
@@ -445,7 +445,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.trace			= trace,
 				.from			= prev[recursion],
 				.level			= recursion,
-				.absclocks		= absclocks,
+				.msbclocks		= msbclocks,
 				.maps			= maps,
 				.num_map_entries	= num_map_entries,
 				.current_task		= current_task
