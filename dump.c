@@ -420,6 +420,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		}
 		absclocks = msbclocks | trace.lsb_timestamp;
 		prev_lsb_timestamp = trace.lsb_timestamp;
+		assert(absclocks >= prev_absclocks);
 		prev_absclocks = absclocks;
 
 		if (absclocks > next_sched) {
