@@ -476,7 +476,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			msbclocks &= ~((1ULL << 18) - 1);
 			prev_timestamp = trace;
 		} else if (trace.kind != OWL_TRACE_KIND_MSBPC &&
-			   prev_lsb_timestamp >= trace.lsb_timestamp) {
+			   prev_lsb_timestamp > trace.lsb_timestamp) {
 			/* Timestamp wrapped */
 			msbclocks += (1ULL << 18);
 		}
