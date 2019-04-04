@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include <stdbool.h>
 
 #if 0
 /* When things stabilize and we can move it to the sysroot */
@@ -98,6 +99,9 @@ struct print_args {
 	const struct owl_map_info *maps;
 	size_t num_map_entries;
 	const struct owl_metadata_entry *current_task;
+	unsigned pc_bits;
+	bool sign_extend_pc;
+	const uint32_t *msbpc;
 };
 
 static void
@@ -118,11 +122,29 @@ print_secall_trace(struct print_args *a)
 
 struct map_search_key {
 	int pid;
-	uint32_t pc;
+	uint64_t pc;
 };
 struct owl_map_info *find_map(const struct map_search_key *key,
 			      const struct owl_map_info *maps,
 			      size_t num_map_entries);
+
+uint64_t
+full_pc(uint32_t pclo, uint32_t pchi, unsigned pc_bits,
+	bool sign_extend)
+{
+	uint64_t pc;
+	assert(pc_bits > 32 && "Support =<32 bit addresses");
+
+	if (sign_extend) {
+		unsigned sign_bits = pc_bits - 32;
+		pchi &= ((1 << sign_bits) - 1);
+		if (pchi & (1ULL << (sign_bits - 1)))
+			pchi = (~0ULL ^ ((1 << sign_bits) - 1)) | pchi;
+	}
+	pc = (((uint64_t) pchi) << 32) | pclo;
+
+	return pc;
+}
 
 static void
 print_return_trace(struct print_args *a)
@@ -130,9 +152,12 @@ print_return_trace(struct print_args *a)
 	/* TODO: Support hcall if we add support for it in H/W */
 	/* TODO: Print time delta */
 	const char *name;
-
+	uint64_t pc, offset;
 	const char *binary = "'none'";
-	uint64_t offset = a->trace.ret.pc;
+
+	pc = full_pc(a->trace.ret.pc, a->msbpc[a->level], a->pc_bits,
+		     a->sign_extend_pc);
+	offset = pc;
 
 	switch (a->from.kind) {
 	case OWL_TRACE_KIND_UECALL: name = "eret "; break;
@@ -148,7 +173,7 @@ print_return_trace(struct print_args *a)
 		struct owl_map_info *map;
 		struct map_search_key key = {
 			.pid = a->current_task->pid,
-			.pc = a->trace.ret.pc
+			.pc = pc
 		};
 
 		assert(a->from.kind == OWL_TRACE_KIND_UECALL ||
@@ -166,18 +191,22 @@ print_return_trace(struct print_args *a)
 					break;
 				binary--;
 			}
-			/* PC is only 32 bits but vm_start is 64 bits */
-			offset = a->trace.ret.pc - (uint32_t) map->vm_start;
+			offset = pc - map->vm_start;
+		} else {
+			/* Happens early in fork/execve. Don't know exactly why
+			 * Unsure if it happens elsewhere ... */
+			binary = "'none'";
 		}
-	} else {
+	} else if (a->level == 1) {
 		binary = "'vmlinux'";
 		/* offset = a->trace.ret.pc |
 		 * 		$(objdump -f vmlinux | grep "start address) */
 	}
+	assert(a->level < 2);
 
-	printf("@=[%020llu] %s\t\tpc=[%08x] retval=[%05d] file=[%s+0x%llx]\n",
+	printf("@=[%020llu] %s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]\n",
 	       (llu_t) a->absclocks, name,
-	       a->trace.ret.pc, a->trace.ret.regval, binary, (llu_t) offset);
+	       (llu_t) pc, a->trace.ret.regval, binary, (llu_t) offset);
 }
 
 static void
@@ -255,13 +284,20 @@ print_invalid_trace(struct print_args *a)
 }
 
 static void
+print_msbpc_trace(struct print_args *a)
+{
+	printf("@=[%020llu] msbpc=[0x%08x] priv=[%d]\n",
+	       (llu_t) a->absclocks, a->trace.msbpc.msbpc, a->trace.msbpc.priv);
+}
+
+static void
 (* const print_trace[8]) (struct print_args *a) = {
 	[OWL_TRACE_KIND_UECALL]		= print_uecall_trace,
 	[OWL_TRACE_KIND_RETURN]		= print_return_trace,
 	[OWL_TRACE_KIND_SECALL]		= print_secall_trace,
 	[OWL_TRACE_KIND_TIMESTAMP]	= print_timestamp_trace,
 	[OWL_TRACE_KIND_EXCEPTION]	= print_exception_trace,
-	[5]				= print_invalid_trace,
+	[OWL_TRACE_KIND_MSBPC]		= print_msbpc_trace,
 	[6]				= print_invalid_trace,
 	[7]				= print_invalid_trace,
 };
@@ -269,29 +305,23 @@ static void
 void print_metadata(const struct owl_metadata_entry *entry, uint64_t absclocks)
 {
 	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
-	printf("@=[%020llu] sched\t\tcomm=[%s] until=[%020llu] cpu=[%d]\n",
-	       (llu_t) absclocks,  entry->comm, (llu_t) entry->timestamp, (int) entry->cpu);
+	printf("@=[%020llu] sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]\n",
+	       (llu_t) absclocks,  entry->comm, entry->pid, (llu_t) entry->timestamp, (int) entry->cpu);
 }
 
 int find_compare_maps(const void *_key, const void *_elem)
 {
 	const struct map_search_key *key = _key;
 	const struct owl_map_info *elem = _elem;
-	uint32_t vm_start, vm_end;
-
-	/* key->pc is only 32 bits (and not shifted TODO IN hardware)
-	 * so we hope for a mapping with no duplicates */
-	vm_start = (uint32_t) elem->vm_start;
-	vm_end = (uint32_t) elem->vm_end;
 
 	if (key->pid < elem->pid)
 		return -1;
 	if (key->pid > elem->pid)
 		return 1;
 
-	if (key->pc < vm_start)
+	if (key->pc < elem->vm_start)
 		return -1;
-	if (key->pc > vm_end)
+	if (key->pc > elem->vm_end)
 		return 1;
 
 	return 0;
@@ -335,6 +365,36 @@ sort_maps(struct owl_map_info *maps, size_t num_map_entries)
 	qsort(maps, num_map_entries, sizeof(*maps), sort_compare_maps);
 }
 
+uint32_t
+find_msbpc(const uint8_t *tracebuf, size_t i, size_t tracebuf_size, int level,
+	   uint32_t msbpc)
+{
+	union owl_trace trace, from;
+
+	memcpy(&from, &tracebuf[i], min(8, tracebuf_size - i));
+	for (; i < tracebuf_size; i += owl_trace_size(trace)) {
+		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
+
+		/* HACK: We should be able to get the exact size from the
+		   driver.  */
+		if (owl_trace_empty_p(trace))
+			break;
+
+		/* A MSBPC trace will be close to the normal return trace.
+		 * Support edge case where a timestamp trace is emitted in
+		 * between the traces. */
+		if (trace.lsb_timestamp != from.lsb_timestamp &&
+		    trace.lsb_timestamp != ((from.lsb_timestamp + 1) & 0x3ffff))
+			break;
+
+		if (trace.kind == OWL_TRACE_KIND_MSBPC) {
+			assert(trace.msbpc.priv == level);
+			return trace.msbpc.msbpc;
+		}
+	}
+	return msbpc;
+}
+
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		const struct owl_metadata_entry *metadata, size_t metadata_size,
 		struct owl_map_info *maps, size_t map_info_size)
@@ -348,6 +408,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
 	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0, next_sched;
 	unsigned prev_lsb_timestamp = 0;
+	uint32_t msbpc[3] = { 0 };
 	const struct owl_metadata_entry *current_task = &metadata[0];
 	const struct owl_metadata_entry
 		*metadata_end = &metadata[num_meta_entries - 1];
@@ -414,7 +475,8 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			 * The lower bits will be in the individual traces. */
 			msbclocks &= ~((1ULL << 18) - 1);
 			prev_timestamp = trace;
-		} else if (prev_lsb_timestamp >= trace.lsb_timestamp) {
+		} else if (trace.kind != OWL_TRACE_KIND_MSBPC &&
+			   prev_lsb_timestamp >= trace.lsb_timestamp) {
 			/* Timestamp wrapped */
 			msbclocks += (1ULL << 18);
 		}
@@ -437,10 +499,17 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			}
 		}
 
-		if (trace.kind != OWL_TRACE_KIND_TIMESTAMP) {
-			if (trace.kind == OWL_TRACE_KIND_RETURN)
+		if (trace.kind != OWL_TRACE_KIND_TIMESTAMP &&
+		    trace.kind != OWL_TRACE_KIND_MSBPC) {
+			if (trace.kind == OWL_TRACE_KIND_RETURN) {
 				recursion--;
-			else {
+				/* H/W writes the MSBPC trace after the normal
+				 * trace so we need to look forward in the
+				 * buffer to find it. */
+				msbpc[recursion] =
+					find_msbpc(tracebuf, i, tracebuf_size,
+						   recursion, msbpc[recursion]);
+			} else {
 				prev[recursion] = trace;
 				recursion++;
 			}
@@ -455,7 +524,10 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.absclocks		= absclocks,
 				.maps			= maps,
 				.num_map_entries	= num_map_entries,
-				.current_task		= current_task
+				.current_task		= current_task,
+				.pc_bits		= 39,
+				.sign_extend_pc		= true,
+				.msbpc			= msbpc
 			};
 			print_trace[trace.kind](&args);
 		}
