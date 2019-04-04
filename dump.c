@@ -179,8 +179,12 @@ print_return_trace(struct print_args *a)
 		assert(a->from.kind == OWL_TRACE_KIND_UECALL ||
 		       a->from.kind == OWL_TRACE_KIND_EXCEPTION);
 
-		map = find_map(&key, a->maps, a->num_map_entries);;
+		/* Assume in fork/execve cases that the process still has its
+		 * parents memory mappings. */
+		if (a->current_task->in_execve || !a->current_task->has_mm)
+			key.pid = a->current_task->ppid;
 
+		map = find_map(&key, a->maps, a->num_map_entries);
 		if (map) {
 			/* The Linux kernels file_path() writes the string to
 			 * the buffer backwards and pads the beginning with
@@ -192,11 +196,8 @@ print_return_trace(struct print_args *a)
 				binary--;
 			}
 			offset = pc - map->vm_start;
-		} else {
-			/* Happens early in fork/execve. Don't know exactly why
-			 * Unsure if it happens elsewhere ... */
+		} else
 			binary = "'none'";
-		}
 	} else if (a->level == 1) {
 		binary = "'vmlinux'";
 		/* offset = a->trace.ret.pc |
