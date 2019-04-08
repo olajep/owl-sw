@@ -407,7 +407,8 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int recursion = 0;
 	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
-	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0, next_sched;
+	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0;
+	uint64_t next_sched = ~0ULL;
 	unsigned prev_lsb_timestamp = 0;
 	uint32_t msbpc[3] = { 0 };
 	const struct owl_metadata_entry *current_task = &metadata[0];
