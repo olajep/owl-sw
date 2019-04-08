@@ -101,7 +101,7 @@ struct print_args {
 	const struct owl_metadata_entry *current_task;
 	unsigned pc_bits;
 	bool sign_extend_pc;
-	const uint32_t *msbpc;
+	const uint32_t *pchi;
 };
 
 static void
@@ -155,7 +155,7 @@ print_return_trace(struct print_args *a)
 	uint64_t pc, offset;
 	const char *binary = "'none'";
 
-	pc = full_pc(a->trace.ret.pc, a->msbpc[a->level], a->pc_bits,
+	pc = full_pc(a->trace.ret.pc, a->pchi[a->level], a->pc_bits,
 		     a->sign_extend_pc);
 	offset = pc;
 
@@ -285,10 +285,10 @@ print_invalid_trace(struct print_args *a)
 }
 
 static void
-print_msbpc_trace(struct print_args *a)
+print_pchi_trace(struct print_args *a)
 {
-	printf("@=[%020llu] msbpc=[0x%08x] priv=[%d]\n",
-	       (llu_t) a->absclocks, a->trace.msbpc.msbpc, a->trace.msbpc.priv);
+	printf("@=[%020llu] pchi=[0x%08x] priv=[%d]\n",
+	       (llu_t) a->absclocks, a->trace.pchi.pchi, a->trace.pchi.priv);
 }
 
 static void
@@ -298,7 +298,7 @@ static void
 	[OWL_TRACE_KIND_SECALL]		= print_secall_trace,
 	[OWL_TRACE_KIND_TIMESTAMP]	= print_timestamp_trace,
 	[OWL_TRACE_KIND_EXCEPTION]	= print_exception_trace,
-	[OWL_TRACE_KIND_MSBPC]		= print_msbpc_trace,
+	[OWL_TRACE_KIND_PCHI]		= print_pchi_trace,
 	[6]				= print_invalid_trace,
 	[7]				= print_invalid_trace,
 };
@@ -367,8 +367,8 @@ sort_maps(struct owl_map_info *maps, size_t num_map_entries)
 }
 
 uint32_t
-find_msbpc(const uint8_t *tracebuf, size_t i, size_t tracebuf_size, int level,
-	   uint32_t msbpc)
+find_pchi(const uint8_t *tracebuf, size_t i, size_t tracebuf_size, int level,
+	   uint32_t pchi)
 {
 	union owl_trace trace, from;
 
@@ -381,19 +381,19 @@ find_msbpc(const uint8_t *tracebuf, size_t i, size_t tracebuf_size, int level,
 		if (owl_trace_empty_p(trace))
 			break;
 
-		/* A MSBPC trace will be close to the normal return trace.
+		/* A PCHI trace will be close to the normal return trace.
 		 * Support edge case where a timestamp trace is emitted in
 		 * between the traces. */
 		if (trace.lsb_timestamp != from.lsb_timestamp &&
 		    trace.lsb_timestamp != ((from.lsb_timestamp + 1) & 0x3ffff))
 			break;
 
-		if (trace.kind == OWL_TRACE_KIND_MSBPC) {
-			assert(trace.msbpc.priv == level);
-			return trace.msbpc.msbpc;
+		if (trace.kind == OWL_TRACE_KIND_PCHI) {
+			assert(trace.pchi.priv == level);
+			return trace.pchi.pchi;
 		}
 	}
-	return msbpc;
+	return pchi;
 }
 
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
@@ -410,7 +410,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0;
 	uint64_t next_sched = ~0ULL;
 	unsigned prev_lsb_timestamp = 0;
-	uint32_t msbpc[3] = { 0 };
+	uint32_t pchi[3] = { 0 };
 	const struct owl_metadata_entry *current_task = &metadata[0];
 	const struct owl_metadata_entry
 		*metadata_end = &metadata[num_meta_entries - 1];
@@ -477,7 +477,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			 * The lower bits will be in the individual traces. */
 			msbclocks &= ~((1ULL << 18) - 1);
 			prev_timestamp = trace;
-		} else if (trace.kind != OWL_TRACE_KIND_MSBPC &&
+		} else if (trace.kind != OWL_TRACE_KIND_PCHI &&
 			   prev_lsb_timestamp > trace.lsb_timestamp) {
 			/* Timestamp wrapped */
 			msbclocks += (1ULL << 18);
@@ -502,15 +502,15 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		}
 
 		if (trace.kind != OWL_TRACE_KIND_TIMESTAMP &&
-		    trace.kind != OWL_TRACE_KIND_MSBPC) {
+		    trace.kind != OWL_TRACE_KIND_PCHI) {
 			if (trace.kind == OWL_TRACE_KIND_RETURN) {
 				recursion--;
-				/* H/W writes the MSBPC trace after the normal
+				/* H/W writes the PCHI trace after the normal
 				 * trace so we need to look forward in the
 				 * buffer to find it. */
-				msbpc[recursion] =
-					find_msbpc(tracebuf, i, tracebuf_size,
-						   recursion, msbpc[recursion]);
+				pchi[recursion] =
+					find_pchi(tracebuf, i, tracebuf_size,
+						   recursion, pchi[recursion]);
 			} else {
 				prev[recursion] = trace;
 				recursion++;
@@ -529,7 +529,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.current_task		= current_task,
 				.pc_bits		= 39,
 				.sign_extend_pc		= true,
-				.msbpc			= msbpc
+				.pchi			= pchi
 			};
 			print_trace[trace.kind](&args);
 		}
