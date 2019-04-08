@@ -128,6 +128,17 @@ struct owl_map_info *find_map(const struct map_search_key *key,
 			      const struct owl_map_info *maps,
 			      size_t num_map_entries);
 
+uint32_t
+sign_extend_pchi(uint32_t pchi, unsigned pc_bits)
+{
+	unsigned sign_bits = pc_bits - 32;
+	pchi &= ((1 << sign_bits) - 1);
+	if (pchi & (1ULL << (sign_bits - 1)))
+		pchi = (~0ULL ^ ((1 << sign_bits) - 1)) | pchi;
+
+	return pchi;
+}
+
 uint64_t
 full_pc(uint32_t pclo, uint32_t pchi, unsigned pc_bits,
 	bool sign_extend)
@@ -135,12 +146,8 @@ full_pc(uint32_t pclo, uint32_t pchi, unsigned pc_bits,
 	uint64_t pc;
 	assert(pc_bits > 32 && "Support =<32 bit addresses");
 
-	if (sign_extend) {
-		unsigned sign_bits = pc_bits - 32;
-		pchi &= ((1 << sign_bits) - 1);
-		if (pchi & (1ULL << (sign_bits - 1)))
-			pchi = (~0ULL ^ ((1 << sign_bits) - 1)) | pchi;
-	}
+	if (sign_extend)
+		pchi = sign_extend_pchi(pchi, pc_bits);
 	pc = (((uint64_t) pchi) << 32) | pclo;
 
 	return pc;
@@ -279,8 +286,11 @@ print_invalid_trace(struct print_args *a)
 static void
 print_pchi_trace(struct print_args *a)
 {
+	uint32_t pchi = a->trace.pchi.pchi;
+	if (a->sign_extend_pc)
+		pchi = sign_extend_pchi(pchi, a->pc_bits);
 	printf("@=[%020llu] pchi=[0x%08x] priv=[%d]\n",
-	       (llu_t) a->absclocks, a->trace.pchi.pchi, a->trace.pchi.priv);
+	       (llu_t) a->absclocks, pchi, a->trace.pchi.priv);
 }
 
 static void
