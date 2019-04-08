@@ -186,15 +186,7 @@ print_return_trace(struct print_args *a)
 
 		map = find_map(&key, a->maps, a->num_map_entries);
 		if (map) {
-			/* The Linux kernels file_path() writes the string to
-			 * the buffer backwards and pads the beginning with
-			 * zeroes */
-			binary = &map->path[OWL_PATH_MAX - 2];
-			while (*binary != '\0' && binary != map->path) {
-				if (binary[-1] == '\0')
-					break;
-				binary--;
-			}
+			binary = map->path;
 			offset = pc - map->vm_start;
 		} else
 			binary = "'none'";
