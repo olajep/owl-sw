@@ -186,12 +186,18 @@ print_return_trace(struct print_args *a)
 		assert(a->from.kind == OWL_TRACE_KIND_UECALL ||
 		       a->from.kind == OWL_TRACE_KIND_EXCEPTION);
 
-		/* Assume in fork/execve cases that the process still has its
-		 * parents memory mappings. */
-		if (a->current_task->in_execve || !a->current_task->has_mm)
+		/* Detecting when we should use the parent's memory mapping
+		 * seems fragile. We might have to add timestamping to the
+		 * mmaping metadata to detect whether the region is alive at
+		 * this point in time. */
+		if (a->current_task->in_execve)
 			key.pid = a->current_task->ppid;
-
 		map = find_map(&key, a->maps, a->num_map_entries);
+		if (!map && !a->current_task->has_mm) {
+			key.pid = a->current_task->ppid;
+			map = find_map(&key, a->maps, a->num_map_entries);
+		}
+
 		if (map) {
 			binary = map->path;
 			offset = pc - map->vm_start;
