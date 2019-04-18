@@ -424,6 +424,107 @@ static printfn_t default_verbose_print_trace[8] = {
 
 /* End default output format */
 
+/* Begin FlameChart friendly output format */
+
+/* FlameChart friendly output
+ * NB: For simplicity we only output the timestamp here, and not the duration.
+ * Post process with script */
+
+static printfn_t print_flame_trace[8];
+static printfn_t real_print_flame_trace[8];
+
+static void
+flame_recurse_callgraph(struct print_args *orig_args, struct callstack *orig_c)
+{
+	struct print_args a;
+	struct callstack c;
+	int i;
+
+	memcpy(&a, orig_args, sizeof(a));
+	memcpy(&c, orig_c, sizeof(c));
+
+	a.delim = ';';
+	printf("%s/%d%c",
+	       a.current_task->comm, a.current_task->pid, a.delim);
+	for (i = 0; i < orig_c->from_frame; i++) {
+		c.to_frame = i;
+		real_print_flame_trace[this_frame(&c)->enter_trace.kind](&a, &c);
+	}
+	a.delim = ' ';
+	c.to_frame = orig_c->to_frame;
+	real_print_flame_trace[this_frame(&c)->enter_trace.kind](&a, &c);
+	a.delim = orig_args->delim;
+	printf("%llu%c", (llu_t) a.absclocks, a.delim);
+}
+
+static void
+print_flame_uecall_trace(struct print_args *a, struct callstack *c)
+{
+	printf("syscall/%d%c", this_frame(c)->enter_trace.ecall.regval,
+	       a->delim);
+}
+
+static void
+print_flame_secall_trace(struct print_args *a, struct callstack *c)
+{
+	printf("mcall/%d%c", this_frame(c)->enter_trace.ecall.regval,
+	       a->delim);
+}
+
+static void
+print_flame_return_trace(struct print_args *a, struct callstack *c)
+{
+	/* TODO: Support hcall if we add support for it in H/W */
+	/* TODO: Print time delta */
+	const char *type; /* Type of return */
+	uint64_t pc, offset;
+	const char *binary = "'none'";
+	struct call_frame *parent = parent_frame(c);
+
+	type = return_type(parent);
+	binary = binary_name(a, c, &pc, &offset);
+
+	printf("%s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]%c",
+	       type, (llu_t) pc, parent->return_trace.ret.regval,
+	       binary, (llu_t) offset, a->delim);
+}
+
+static void
+print_flame_exception_trace(struct print_args *a, struct callstack *c)
+{
+	const char *type, *name, *desc;
+	unsigned cause;
+	struct call_frame *frame = this_frame(c);
+
+	describe_exception(frame->enter_trace, &type, &name, &desc, &cause);
+
+	printf("%s/%s%c",
+	       type, name, a->delim);
+}
+
+static printfn_t print_flame_trace[8] = {
+	[OWL_TRACE_KIND_UECALL]		= flame_recurse_callgraph,
+	[OWL_TRACE_KIND_RETURN]		= flame_recurse_callgraph,
+	[OWL_TRACE_KIND_SECALL]		= flame_recurse_callgraph,
+	[OWL_TRACE_KIND_TIMESTAMP]	= flame_recurse_callgraph,
+	[OWL_TRACE_KIND_EXCEPTION]	= flame_recurse_callgraph,
+	[OWL_TRACE_KIND_PCHI]		= flame_recurse_callgraph,
+	[6]				= flame_recurse_callgraph,
+	[7]				= flame_recurse_callgraph,
+};
+static printfn_t real_print_flame_trace[8] = {
+	[OWL_TRACE_KIND_UECALL]		= print_flame_uecall_trace,
+	[OWL_TRACE_KIND_RETURN]		= print_flame_return_trace,
+	[OWL_TRACE_KIND_SECALL]		= print_flame_secall_trace,
+	[OWL_TRACE_KIND_TIMESTAMP]	= print_nop,
+	[OWL_TRACE_KIND_EXCEPTION]	= print_flame_exception_trace,
+	[OWL_TRACE_KIND_PCHI]		= print_nop,
+	[6]				= print_invalid_trace,
+	[7]				= print_invalid_trace,
+};
+
+/* End FlameChart friendly output format */
+
 void
 print_metadata(const struct owl_metadata_entry *entry, uint64_t absclocks, char delim)
 {
@@ -547,7 +648,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		*metadata_end = &metadata[num_meta_entries - 1];
 	printfn_t *printfn;
 
-	if (options->verbose)
+	if (options->outfmt == OUTFMT_FLAME)
+		printfn = print_flame_trace;
+	else if (options->verbose)
 		printfn = default_verbose_print_trace;
 	else
 		printfn = default_print_trace;
@@ -598,7 +701,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	/* Print first scheduled task */
 	if (current_task <= metadata_end) {
 		memcpy(&trace, &tracebuf[0], min(8, tracebuf_size));
-		print_metadata(current_task, trace.timestamp.timestamp, '\n');
+		if (options->outfmt != OUTFMT_FLAME)
+			print_metadata(current_task, trace.timestamp.timestamp,
+				       '\n');
 		next_sched = current_task->timestamp;
 	}
 
@@ -630,7 +735,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 
 		if (absclocks > next_sched) {
 			if (current_task <= metadata_end) {
-				print_metadata(current_task, next_sched, '\n');
+				if (options->outfmt != OUTFMT_FLAME)
+					print_metadata(current_task, next_sched,
+						       '\n');
 				if (current_task < metadata_end) {
 					current_task++;
 					next_sched = current_task->timestamp;
