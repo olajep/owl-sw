@@ -12,6 +12,9 @@ CFLAGS ?= -Wall -Wextra -g -O0
 TARGETS = dump owl
 all: $(TARGETS)
 
+# Remove when owl.h becomes stable and lives in sysroot/usr/include
+dump.o owl.o: owl.h
+
 dump: dump.o
 dump.o: syscalltable.h
 
