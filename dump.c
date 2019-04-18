@@ -13,6 +13,7 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <stdbool.h>
+#include <getopt.h>
 
 #if 0
 /* When things stabilize and we can move it to the sysroot */
@@ -43,6 +44,8 @@ do {								\
 		_warned = 1;					\
 	}							\
 } while (0)
+
+#define STRNCMP_LIT(s, lit) strncmp((s), ""lit"", sizeof((lit)-1))
 
 typedef long long unsigned int llu_t;
 
@@ -105,6 +108,12 @@ struct print_args {
 };
 
 static void
+print_nop(struct print_args *a)
+{
+	(void)a;
+}
+
+static void
 print_uecall_trace(struct print_args *a)
 {
 	/* TODO: Support hcall if we add support for it in H/W */
@@ -124,6 +133,9 @@ struct map_search_key {
 	int pid;
 	uint64_t pc;
 };
+
+typedef void (* const printfn_t)(struct print_args *);
+
 struct owl_map_info *find_map(const struct map_search_key *key,
 			      const struct owl_map_info *maps,
 			      size_t num_map_entries);
@@ -299,8 +311,18 @@ print_pchi_trace(struct print_args *a)
 	       (llu_t) a->absclocks, pchi, a->trace.pchi.priv);
 }
 
-static void
-(* const print_trace[8]) (struct print_args *a) = {
+static printfn_t default_print_trace[8] = {
+	[OWL_TRACE_KIND_UECALL]		= print_uecall_trace,
+	[OWL_TRACE_KIND_RETURN]		= print_return_trace,
+	[OWL_TRACE_KIND_SECALL]		= print_secall_trace,
+	[OWL_TRACE_KIND_TIMESTAMP]	= print_nop,
+	[OWL_TRACE_KIND_EXCEPTION]	= print_exception_trace,
+	[OWL_TRACE_KIND_PCHI]		= print_nop,
+	[6]				= print_invalid_trace,
+	[7]				= print_invalid_trace,
+};
+
+static printfn_t default_verbose_print_trace[8] = {
 	[OWL_TRACE_KIND_UECALL]		= print_uecall_trace,
 	[OWL_TRACE_KIND_RETURN]		= print_return_trace,
 	[OWL_TRACE_KIND_SECALL]		= print_secall_trace,
@@ -404,9 +426,16 @@ find_pchi(const uint8_t *tracebuf, size_t i, size_t tracebuf_size, int level,
 	return pchi;
 }
 
+struct options {
+	enum { OUTFMT_NORMAL, OUTFMT_FLAME } outfmt;
+	bool verbose;
+	const char *input;
+};
+
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		const struct owl_metadata_entry *metadata, size_t metadata_size,
-		struct owl_map_info *maps, size_t map_info_size)
+		struct owl_map_info *maps, size_t map_info_size,
+		struct options *options)
 {
 	/* TODO: Add support for nested interrupts */
 
@@ -422,6 +451,12 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	const struct owl_metadata_entry *current_task = &metadata[0];
 	const struct owl_metadata_entry
 		*metadata_end = &metadata[num_meta_entries - 1];
+	printfn_t *printfn;
+
+	if (options->verbose)
+		printfn = default_verbose_print_trace;
+	else
+		printfn = default_print_trace;
 
 	/* Sort the map info so we can binary search it */
 	sort_maps(maps, num_map_entries);
@@ -539,12 +574,12 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.sign_extend_pc		= true,
 				.pchi			= pchi
 			};
-			print_trace[trace.kind](&args);
+			printfn[trace.kind](&args);
 		}
 	}
 }
 
-int map_file(char *path, const void **ptr, size_t *size)
+int map_file(const char *path, const void **ptr, size_t *size)
 {
 	const void *mem;
 	int fd, err;
@@ -568,6 +603,83 @@ int map_file(char *path, const void **ptr, size_t *size)
 	return fd;
 }
 
+void
+print_usage_and_die(int argc, char **argv, int retval)
+{
+	FILE *f;
+
+	(void)argc;
+
+	f = retval == EXIT_SUCCESS ? stdout : stderr;
+	fprintf(f,
+		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame]] [--help | -h] FILE\n",
+		argv[0]);
+		exit(EXIT_FAILURE);
+
+	exit(retval);
+}
+
+void
+parse_options_or_die(int argc, char **argv, struct options *options)
+{
+	int c;
+
+	if (argc < 2)
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
+
+	while (1) {
+		int option_index = 0;
+		static struct option long_options[] = {
+			{"verbose", no_argument,       NULL,  'v' },
+			{"format",  required_argument, NULL,  'f' },
+			{"help",    no_argument,       NULL,  'h' },
+			{0,         0,                 NULL,  0   }
+		};
+
+		c = getopt_long(argc, argv, "vf:h", long_options, &option_index);
+		if (c == -1)
+			break;
+
+		switch (c) {
+			case 'v':
+				options->verbose = true;
+				break;
+			case 'f':
+				if (!STRNCMP_LIT(optarg, "normal")) {
+					options->outfmt = OUTFMT_NORMAL;
+					break;
+				}
+				if (!STRNCMP_LIT(optarg, "flame")) {
+					options->outfmt = OUTFMT_FLAME;
+					break;
+				}
+				print_usage_and_die(argc, argv, EXIT_FAILURE);
+				break;
+			case 'h':
+				print_usage_and_die(argc, argv, EXIT_SUCCESS);
+				break;
+			case 0:
+				/* We don't have any long opts without short
+				 * variants.
+				 * NB: Review when adding more options. */
+				abort();
+				break;
+
+			case '?': /* Unknown option */
+			default:
+				print_usage_and_die(argc, argv, EXIT_FAILURE);
+		}
+	}
+
+	if (optind >= argc)
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
+	options->input = argv[optind];
+	optind++;
+
+	if (optind != argc)
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -577,17 +689,15 @@ main(int argc, char *argv[])
 	struct owl_map_info *map_info;
 	int fd;
 	size_t buf_size, tracebuf_size, metadata_size, map_info_size;
+	struct options options = { 0 };
 
 	/* Disable line buffering */
 	setbuf(stdout, NULL);
 	setbuf(stderr, NULL);
 
-	if (argc < 2) {
-		fprintf(stderr, "usage: %s [FILE]\n", argv[0]);
-		exit(EXIT_FAILURE);
-	}
+	parse_options_or_die(argc, argv, &options);
 
-	fd = map_file(argv[1], (const void **) &buf, &buf_size);
+	fd = map_file(options.input, (const void **) &buf, &buf_size);
 	if (fd < 0) {
 		perror(argv[0]);
 		fprintf(stderr, "usage: %s [FILE]\n", argv[0]);
@@ -610,7 +720,8 @@ main(int argc, char *argv[])
 	map_info_size = file_header->map_info_size;
 	dump_trace(tracebuf, tracebuf_size,
 		   metadata, metadata_size,
-		   map_info, map_info_size);
+		   map_info, map_info_size,
+		   &options);
 
 	munmap((void *) buf, buf_size);
 	close(fd);
