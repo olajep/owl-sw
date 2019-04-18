@@ -94,47 +94,47 @@ timestamp_trace_to_clocks(union owl_trace curr, union owl_trace prev,
 	return absclocks | currclocks;
 }
 
+struct call_frame {
+	union owl_trace enter_trace;
+	union owl_trace return_trace;
+	uint64_t enter_time;
+	uint64_t exit_time;
+	/* We could have a task switch ?!?! */
+	/* const struct owl_metadata_entry *current_task; */
+	uint32_t pchi;
+};
+
+struct callstack {
+	struct call_frame *frames;
+	int from_frame;	/* The current 'frame' we're at in the callstack */
+	int to_frame;	/* The 'frame' we're going to */
+};
+
 struct print_args {
+	/* Used for timestamp pchi & invalid */
 	union owl_trace trace;
-	union owl_trace from;
-	size_t level;
 	uint64_t absclocks;
+
+	/* Current task and memory mapping info */
 	const struct owl_map_info *maps;
 	size_t num_map_entries;
 	const struct owl_metadata_entry *current_task;
+
+	/* Arch settings */
 	unsigned pc_bits;
 	bool sign_extend_pc;
-	const uint32_t *pchi;
+
+	char delim;
 };
-
-static void
-print_nop(struct print_args *a)
-{
-	(void)a;
-}
-
-static void
-print_uecall_trace(struct print_args *a)
-{
-	/* TODO: Support hcall if we add support for it in H/W */
-	printf("@=[%020llu] ecall\t\tfunction=[%05d]\n",
-	       (llu_t) a->absclocks, a->trace.ecall.regval);
-}
-
-static void
-print_secall_trace(struct print_args *a)
-{
-	/* TODO: Support hcall if we add support for it in H/W */
-	printf("@=[%020llu] mcall\t\tfunction=[%05d]\n",
-	       (llu_t) a->absclocks, a->trace.ecall.regval);
-}
 
 struct map_search_key {
 	int pid;
 	uint64_t pc;
 };
 
-typedef void (* const printfn_t)(struct print_args *);
+typedef void (* const printfn_t)(struct print_args *, struct callstack *);
+
+/* Begin print helper functions */
 
 struct owl_map_info *find_map(const struct map_search_key *key,
 			      const struct owl_map_info *maps,
@@ -165,38 +165,60 @@ full_pc(uint32_t pclo, uint32_t pchi, unsigned pc_bits,
 	return pc;
 }
 
-static void
-print_return_trace(struct print_args *a)
+struct call_frame *
+parent_frame(struct callstack *c)
 {
-	/* TODO: Support hcall if we add support for it in H/W */
-	/* TODO: Print time delta */
-	const char *name;
-	uint64_t pc, offset;
-	const char *binary = "'none'";
+	int parent = min(c->to_frame, c->from_frame);
+	return &c->frames[parent];
+}
 
-	pc = full_pc(a->trace.ret.pc, a->pchi[a->level], a->pc_bits,
-		     a->sign_extend_pc);
-	offset = pc;
+struct call_frame *
+this_frame(struct callstack *c)
+{
+	int frame = max(c->to_frame, c->from_frame);
+	assert(0 <= c->to_frame && c->to_frame < 3);
+	assert(0 <= c->from_frame && c->from_frame < 3);
+	return &c->frames[frame];
+}
 
-	switch (a->from.kind) {
-	case OWL_TRACE_KIND_UECALL: name = "eret "; break;
-	case OWL_TRACE_KIND_SECALL: name = "mret "; break;
+const char *
+return_type(struct call_frame *frame)
+{
+	switch (frame->enter_trace.kind) {
+	case OWL_TRACE_KIND_UECALL: return "eret ";
+	case OWL_TRACE_KIND_SECALL: return "mret ";
 	case OWL_TRACE_KIND_EXCEPTION:
-		name = a->from.exception.cause & 128 ? "iret " : "exret"; break;
+		if (frame->enter_trace.exception.cause & 128)
+			return "iret ";
+		else
+			return "exret";
 	default:
-		printf("return trace kind=%d\n", a->trace.kind);
-		return;
+		printf("return trace kind=%d\n", frame->enter_trace.kind);
+		assert("wrong return trace" && 0);
+		return "?????";
 	}
+}
 
-	if (a->level == 0) {
+const char *
+binary_name(struct print_args *a, struct callstack *c,
+	    uint64_t *pc, uint64_t *offset)
+{
+	struct call_frame *parent = parent_frame(c);
+
+	*pc = full_pc(parent->return_trace.ret.pc, parent->pchi, a->pc_bits,
+		      a->sign_extend_pc);
+	*offset = *pc;
+
+	const char *binary = "'none'";
+	if (c->to_frame == 0) {
 		struct owl_map_info *map;
 		struct map_search_key key = {
 			.pid = a->current_task->pid,
-			.pc = pc
+			.pc = *pc
 		};
 
-		assert(a->from.kind == OWL_TRACE_KIND_UECALL ||
-		       a->from.kind == OWL_TRACE_KIND_EXCEPTION);
+		assert(parent->enter_trace.kind == OWL_TRACE_KIND_UECALL ||
+		       parent->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
 
 		/* Detecting when we should use the parent's memory mapping
 		 * seems fragile. We might have to add timestamping to the
@@ -212,23 +234,22 @@ print_return_trace(struct print_args *a)
 
 		if (map) {
 			binary = map->path;
-			offset = pc - map->vm_start;
+			*offset = *pc - map->vm_start;
 		} else
 			binary = "'none'";
-	} else if (a->level == 1) {
+	} else if (c->to_frame == 1) {
 		binary = "'vmlinux'";
-		/* offset = a->trace.ret.pc |
+		/* offset = a->frame[a->to_frame].ret.pc |
 		 * 		$(objdump -f vmlinux | grep "start address) */
 	}
-	assert(a->level < 2);
+	assert(c->to_frame < 2);
 
-	printf("@=[%020llu] %s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]\n",
-	       (llu_t) a->absclocks, name,
-	       (llu_t) pc, a->trace.ret.regval, binary, (llu_t) offset);
+	return binary;
 }
 
-static void
-print_exception_trace(struct print_args *a)
+void
+describe_exception(union owl_trace trace, const char **type, const char **name,
+		   const char **desc, unsigned *cause)
 {
 	/* Exception causes */
 	const char *causes[16] = {
@@ -263,52 +284,120 @@ print_exception_trace(struct print_args *a)
 		[ 4] = "UTI"
 	};
 
-	const char *type, *name, *desc;
-	unsigned cause = a->trace.exception.cause;
+	*cause = trace.exception.cause;
+	*name = NULL;
 
-	if (cause & 128) {
-		cause &= ~128;
-		type = "interrupt";
-		desc = "irqno";
-		name = cause < ARRAY_SIZE(interrupts) ?
-			interrupts[cause] : "???";
+	if (*cause & 128) {
+		*cause &= ~128;
+		*type = "interrupt";
+		*desc = "irqno";
+		*name = *cause < ARRAY_SIZE(interrupts) ?
+			interrupts[*cause] : "???";
 	} else {
-		type = "exception";
-		desc = "cause";
-		name = cause < ARRAY_SIZE(causes) ?
-			causes[cause] : "???";
+		*type = "exception";
+		*desc = "cause";
+		*name = *cause < ARRAY_SIZE(causes) ?
+			causes[*cause] : "???";
 	}
-	name = name ? : "???";
+	*name = *name ? : "???";
+}
 
-	printf("@=[%020llu] %s\t%s=[0x%03x] name=%s\n",
-	       (llu_t) a->absclocks, type, desc, cause, name);
+/* End print helper functions */
+
+static void
+print_nop(struct print_args *a, struct callstack *c)
+{
+	(void)a;
+	(void)c;
+}
+
+/* Begin default output format */
+
+static void
+print_uecall_trace(struct print_args *a, struct callstack *c)
+{
+	struct call_frame *frame = this_frame(c);
+	/* TODO: Support hcall if we add support for it in H/W */
+	printf("@=[%020llu] ecall\t\tfunction=[%05d]%c",
+	       (llu_t) frame->enter_time, frame->enter_trace.ecall.regval,
+	       a->delim);
 }
 
 static void
-print_timestamp_trace(struct print_args *a)
+print_secall_trace(struct print_args *a, struct callstack *c)
 {
+	struct call_frame *frame = this_frame(c);
+	/* TODO: Support hcall if we add support for it in H/W */
+	printf("@=[%020llu] mcall\t\tfunction=[%05d]%c",
+	       (llu_t) frame->enter_time, frame->enter_trace.ecall.regval,
+	       a->delim);
+}
+
+static void
+print_return_trace(struct print_args *a, struct callstack *c)
+{
+	/* TODO: Support hcall if we add support for it in H/W */
+	/* TODO: Print time delta */
+	const char *type;
+	uint64_t pc, offset;
+	const char *binary = "'none'";
+	struct call_frame *parent = parent_frame(c);
+
+	pc = full_pc(parent->return_trace.ret.pc, parent->pchi,
+		     a->pc_bits, a->sign_extend_pc);
+	offset = pc;
+
+	type = return_type(this_frame(c));
+	binary = binary_name(a, c, &pc, &offset);
+
+	printf("@=[%020llu] %s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]%c",
+	       (llu_t) parent->exit_time, type,
+	       (llu_t) pc, parent->return_trace.ret.regval, binary,
+	       (llu_t) offset, a->delim);
+}
+
+static void
+print_exception_trace(struct print_args *a, struct callstack *c)
+{
+	const char *type, *name, *desc;
+	unsigned cause;
+	struct call_frame *frame = this_frame(c);
+
+	describe_exception(frame->enter_trace, &type, &name, &desc, &cause);
+
+	printf("@=[%020llu] %s\t%s=[0x%03x] name=%s%c",
+	       (llu_t) frame->enter_time, type, desc, cause, name, a->delim);
+}
+
+static void
+print_timestamp_trace(struct print_args *a, struct callstack *c)
+{
+	(void)c;
 	assert(a->absclocks == a->trace.timestamp.timestamp);
-	printf("@=[%020llu] timestamp\tt=[%020llu]\n",
-	       (llu_t) a->absclocks, (llu_t) a->trace.timestamp.timestamp);
+	printf("@=[%020llu] timestamp\tt=[%020llu]%c",
+	       (llu_t) a->absclocks, (llu_t) a->trace.timestamp.timestamp,
+	       a->delim);
 }
 
 static void
-print_invalid_trace(struct print_args *a)
+print_invalid_trace(struct print_args *a, struct callstack *c)
 {
+	(void)c;
 	long long data;
 	unsigned kind = a->trace.kind;
 	memcpy(&data, &a->trace, sizeof(data));
-	printf("INVALID TRACE kind=%u data=[%016llx]\n", kind, data);
+	printf("INVALID TRACE kind=%u data=[%016llx]%c", kind, data, a->delim);
 }
 
 static void
-print_pchi_trace(struct print_args *a)
+print_pchi_trace(struct print_args *a, struct callstack *c)
 {
+	(void)c;
 	uint32_t pchi = a->trace.pchi.pchi;
 	if (a->sign_extend_pc)
 		pchi = sign_extend_pchi(pchi, a->pc_bits);
-	printf("@=[%020llu] pchi=[0x%08x] priv=[%d]\n",
-	       (llu_t) a->absclocks, pchi, a->trace.pchi.priv);
+	printf("@=[%020llu] pchi=[0x%08x] priv=[%d]%c",
+	       (llu_t) a->absclocks, pchi, a->trace.pchi.priv, a->delim);
 }
 
 static printfn_t default_print_trace[8] = {
@@ -333,11 +422,15 @@ static printfn_t default_verbose_print_trace[8] = {
 	[7]				= print_invalid_trace,
 };
 
-void print_metadata(const struct owl_metadata_entry *entry, uint64_t absclocks)
+/* End default output format */
+
+void
+print_metadata(const struct owl_metadata_entry *entry, uint64_t absclocks, char delim)
 {
 	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
-	printf("@=[%020llu] sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]\n",
-	       (llu_t) absclocks,  entry->comm, entry->pid, (llu_t) entry->timestamp, (int) entry->cpu);
+	printf("@=[%020llu] sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]%c",
+	       (llu_t) absclocks,  entry->comm, entry->pid,
+	       (llu_t) entry->timestamp, (int) entry->cpu, delim);
 }
 
 int find_compare_maps(const void *_key, const void *_elem)
@@ -397,7 +490,7 @@ sort_maps(struct owl_map_info *maps, size_t num_map_entries)
 }
 
 uint32_t
-find_pchi(const uint8_t *tracebuf, size_t i, size_t tracebuf_size, int level,
+find_pchi(const uint8_t *tracebuf, size_t i, size_t tracebuf_size, int to_frame,
 	   uint32_t pchi)
 {
 	union owl_trace trace, from;
@@ -419,7 +512,7 @@ find_pchi(const uint8_t *tracebuf, size_t i, size_t tracebuf_size, int level,
 			break;
 
 		if (trace.kind == OWL_TRACE_KIND_PCHI) {
-			assert(trace.pchi.priv == level);
+			assert(trace.pchi.priv == to_frame);
 			return trace.pchi.pchi;
 		}
 	}
@@ -442,12 +535,13 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	size_t i = 0;
 	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
-	int recursion = 0;
-	union owl_trace trace, prev[3] = { 0 }, prev_timestamp = { 0 };
+	int to_frame = 0, from_frame = 0; /* See comment about callstack/frame levels */
+	union owl_trace trace, prev_timestamp = { 0 };
+	struct call_frame call_frame[3] = { 0 };
 	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0;
 	uint64_t next_sched = ~0ULL;
 	unsigned prev_lsb_timestamp = 0;
-	uint32_t pchi[3] = { 0 };
+	uint32_t pchi = 0;
 	const struct owl_metadata_entry *current_task = &metadata[0];
 	const struct owl_metadata_entry
 		*metadata_end = &metadata[num_meta_entries - 1];
@@ -461,7 +555,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	/* Sort the map info so we can binary search it */
 	sort_maps(maps, num_map_entries);
 
-	/* Recursion levels:
+	/* Callstack/frame levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
 
 	/* The first trace should be a timestamp. */
@@ -482,25 +576,29 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		switch (trace.kind) {
 		case OWL_TRACE_KIND_SECALL:
 		case OWL_TRACE_KIND_EXCEPTION:
-			recursion++;
+			to_frame++;
 		case OWL_TRACE_KIND_UECALL:
 			break;
 		case OWL_TRACE_KIND_RETURN:
-			recursion++;
+			to_frame++;
 		default: continue;
 		}
 		break;
 	}
 
 	/* Initialize with sane values */
-	prev[0].kind = OWL_TRACE_KIND_UECALL;
-	prev[1].kind = OWL_TRACE_KIND_SECALL;
-	prev[2].kind = OWL_TRACE_KIND_SECALL;
+	call_frame[0].enter_trace.kind = OWL_TRACE_KIND_UECALL;
+	call_frame[1].enter_trace.kind = OWL_TRACE_KIND_UECALL;
+	call_frame[2].enter_trace.kind = OWL_TRACE_KIND_SECALL;
+	call_frame[0].return_trace.kind = OWL_TRACE_KIND_RETURN;
+	call_frame[1].return_trace.kind = OWL_TRACE_KIND_RETURN;
+	call_frame[2].return_trace.kind = OWL_TRACE_KIND_RETURN;
+	/* call_frame[0].current_task = current_task; */
 
 	/* Print first scheduled task */
 	if (current_task <= metadata_end) {
 		memcpy(&trace, &tracebuf[0], min(8, tracebuf_size));
-		print_metadata(current_task, trace.timestamp.timestamp);
+		print_metadata(current_task, trace.timestamp.timestamp, '\n');
 		next_sched = current_task->timestamp;
 	}
 
@@ -532,7 +630,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 
 		if (absclocks > next_sched) {
 			if (current_task <= metadata_end) {
-				print_metadata(current_task, next_sched);
+				print_metadata(current_task, next_sched, '\n');
 				if (current_task < metadata_end) {
 					current_task++;
 					next_sched = current_task->timestamp;
@@ -544,37 +642,47 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			}
 		}
 
+		from_frame = to_frame;
 		if (trace.kind != OWL_TRACE_KIND_TIMESTAMP &&
 		    trace.kind != OWL_TRACE_KIND_PCHI) {
 			if (trace.kind == OWL_TRACE_KIND_RETURN) {
-				recursion--;
+				to_frame--;
 				/* H/W writes the PCHI trace after the normal
 				 * trace so we need to look forward in the
 				 * buffer to find it. */
-				pchi[recursion] =
-					find_pchi(tracebuf, i, tracebuf_size,
-						   recursion, pchi[recursion]);
+				pchi = find_pchi(tracebuf, i, tracebuf_size,
+						 to_frame,
+						 call_frame[to_frame].pchi);
+				call_frame[to_frame].pchi = pchi;
+				call_frame[to_frame].return_trace = trace;
+				call_frame[to_frame].exit_time = absclocks;
 			} else {
-				prev[recursion] = trace;
-				recursion++;
+				to_frame++;
+				/* call_frame[to_frame].current_task = current_task; */
+				call_frame[to_frame].enter_time = absclocks;
+				call_frame[to_frame].enter_trace = trace;
 			}
 		}
-		assert(0 <= recursion && recursion < 3);
+		assert(0 <= to_frame && to_frame < 3);
+		assert(0 <= from_frame && from_frame < 3);
 
 		{
 			struct print_args args = {
 				.trace			= trace,
-				.from			= prev[recursion],
-				.level			= recursion,
 				.absclocks		= absclocks,
 				.maps			= maps,
 				.num_map_entries	= num_map_entries,
 				.current_task		= current_task,
 				.pc_bits		= 39,
 				.sign_extend_pc		= true,
-				.pchi			= pchi
+				.delim			= '\n'
 			};
-			printfn[trace.kind](&args);
+			struct callstack callstack = {
+				.frames			= call_frame,
+				.from_frame		= from_frame,
+				.to_frame		= to_frame,
+			};
+			printfn[trace.kind](&args, &callstack);
 		}
 	}
 }
