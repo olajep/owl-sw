@@ -201,7 +201,6 @@ get_frame(struct callstack *c, int frameno)
 	return &c->frames[frameno];
 }
 
-
 const char *
 return_type(struct call_frame *frame)
 {
@@ -214,7 +213,7 @@ return_type(struct call_frame *frame)
 		else
 			return "exret";
 	default:
-		printf("return trace kind=%d\n", frame->enter_trace.kind);
+		printf("enter trace kind=%d\n", frame->enter_trace.kind);
 		assert("wrong return trace" && 0);
 		return "?????";
 	}
@@ -496,7 +495,8 @@ flame_recurse_down(struct print_args *a, struct callstack *c, int level)
 
 	a->delim = terminate ? ' ' : ';';
 	if (terminate) {
-		printf("%llu\n", (llu_t) c->frames[c->to_frame].enter_time);
+		printf("[from_frame=%d]", c->from_frame);
+		printf("%llu\n", (llu_t) c->frames[c->from_frame].enter_time);
 		return;
 	}
 
@@ -508,7 +508,7 @@ flame_recurse_down(struct print_args *a, struct callstack *c, int level)
 static void
 flame_recurse_up(struct print_args *a, struct callstack *c, int level)
 {
-	const bool terminate = c->to_frame == level;
+	const bool terminate = c->from_frame == level;
 
 	a->delim = ';';
 	if (terminate)
@@ -520,6 +520,7 @@ flame_recurse_up(struct print_args *a, struct callstack *c, int level)
 	if (terminate) {
 		a->delim = ' ';
 		//real_print_flame_trace[c->frames[c->from_frame].return_trace.kind](a, c);
+		printf("[to_frame=%d]", c->to_frame);
 		printf("%llu\n", (llu_t) c->frames[c->to_frame].return_time);
 		return;
 	}
@@ -534,20 +535,23 @@ flame_recurse_callgraph(struct print_args *orig_a, struct callstack *orig_c)
 {
 	struct print_args a;
 	struct callstack c;
+	struct owl_metadata_entry *task;
 
 	memcpy(&a, orig_a, sizeof(a));
 	memcpy(&c, orig_c, sizeof(c));
 
 	printf("%s/%d;",
-	       c.frames[0].enter_task->comm,
-	       c.frames[0].enter_task->pid);
+	       orig_c->frames[0].return_task->comm,
+	       orig_c->frames[0].return_task->pid);
 	if (orig_c->to_frame > orig_c->from_frame) {
 		printf("[down]");
+		printf("[to_frame=%d]", orig_c->to_frame);
 		c.to_frame = 1;
 		c.from_frame = 0;
 		flame_recurse_down(&a, &c, orig_c->to_frame);
 	} else if (c.to_frame < c.from_frame) {
 		printf("[up]");
+		printf("[to_frame=%d]", orig_c->to_frame);
 		c.to_frame = 0;
 		c.from_frame = 1;
 		flame_recurse_up(&a, &c, orig_c->from_frame);
@@ -811,6 +815,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		}
 		break;
 	}
+	from_frame = to_frame;
 
 	/* Initialize with sane values */
 	call_frame[0].enter_trace.kind = OWL_TRACE_KIND_UECALL;
