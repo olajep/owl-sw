@@ -494,7 +494,7 @@ flame_recurse_down(struct print_args *a, struct callstack *c, int level)
 		printf("%llu\n", (llu_t) to_frame(c)->enter_time);
 		return;
 	} else {
-		real_print_flame_trace[from_frame(c)->enter_trace.kind](a, c);
+		real_print_flame_trace[to_frame(c)->enter_trace.kind](a, c);
 	}
 
 	c->to_frame++;
