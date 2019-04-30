@@ -223,24 +223,23 @@ return_type(struct call_frame *frame)
 }
 
 const char *
-binary_name(struct print_args *a, struct callstack *c, int frameno,
-	    uint64_t *pc, uint64_t *offset)
+binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
+	    uint64_t *offset)
 {
-	struct call_frame *frame = get_frame(c, frameno);
-	const struct owl_metadata_entry *task = frame->return_task;
-	*pc = full_pc(frame, a->pc_bits, a->sign_extend_pc);
+	const struct owl_metadata_entry *task = to_frame(c)->return_task;
+	*pc = full_pc(to_frame(c), a->pc_bits, a->sign_extend_pc);
 	*offset = *pc;
 
 	const char *binary = "'none'";
-	if (frameno == 0) {
+	if (to_frameno(c) == 0) {
 		struct owl_map_info *map;
 		struct map_search_key key = {
 			.pid = task->pid,
 			.pc = *pc
 		};
 
-		assert(frame->enter_trace.kind == OWL_TRACE_KIND_UECALL ||
-		       frame->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
+		assert(from_frame(c)->enter_trace.kind == OWL_TRACE_KIND_UECALL ||
+		       from_frame(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
 
 		/* Detecting when we should use the parent's memory mapping
 		 * seems fragile. We might have to add timestamping to the
@@ -259,12 +258,14 @@ binary_name(struct print_args *a, struct callstack *c, int frameno,
 			*offset = *pc - map->vm_start;
 		} else
 			binary = "'none'";
-	} else if (frameno == 1) {
+	} else if (to_frameno(c) == 1) {
+		assert(from_frame(c)->enter_trace.kind == OWL_TRACE_KIND_SECALL ||
+		       from_frame(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
 		binary = "'vmlinux'";
 		/* offset = a->frame[a->to_frame].ret.pc |
 		 * 		$(objdump -f vmlinux | grep "start address) */
 	}
-	assert(frameno < 2);
+	assert(to_frameno(c) < 2);
 
 	return binary;
 }
