@@ -180,6 +180,7 @@ to_frameno(struct callstack *c)
 static struct call_frame *
 to_frame(struct callstack *c)
 {
+	assert (0 <= c->to_frame && c->to_frame <= 2);
 	return &c->frames[c->to_frame];
 }
 
@@ -192,12 +193,14 @@ from_frameno(struct callstack *c)
 static struct call_frame *
 from_frame(struct callstack *c)
 {
+	assert (0 <= c->from_frame && c->from_frame <= 2);
 	return &c->frames[c->from_frame];
 }
 
 static struct call_frame *
 get_frame(struct callstack *c, int frameno)
 {
+	assert (0 <= frameno && frameno <= 2);
 	return &c->frames[frameno];
 }
 
