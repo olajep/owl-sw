@@ -485,19 +485,16 @@ static printfn_t real_print_flame_trace[8];
 static void
 flame_recurse_down(struct print_args *a, struct callstack *c, int level)
 {
-	const bool terminate = c->from_frame == level;
+	const bool terminate = c->to_frame == level;
 
 	a->delim = ';';
-	if (terminate)
-		real_print_flame_trace[c->frames[c->to_frame].return_trace.kind](a, c);
-	else
-		real_print_flame_trace[c->frames[c->from_frame].enter_trace.kind](a, c);
-
-	a->delim = terminate ? ' ' : ';';
 	if (terminate) {
-		printf("[from_frame=%d]", c->from_frame);
-		printf("%llu\n", (llu_t) c->frames[c->from_frame].enter_time);
+		real_print_flame_trace[to_frame(c)->enter_trace.kind](a, c);
+		a->delim = ' ';
+		printf("%llu\n", (llu_t) to_frame(c)->enter_time);
 		return;
+	} else {
+		real_print_flame_trace[from_frame(c)->enter_trace.kind](a, c);
 	}
 
 	c->to_frame++;
@@ -511,18 +508,13 @@ flame_recurse_up(struct print_args *a, struct callstack *c, int level)
 	const bool terminate = c->from_frame == level;
 
 	a->delim = ';';
-	if (terminate)
-		real_print_flame_trace[c->frames[c->from_frame].return_trace.kind](a, c);
-	else
-		real_print_flame_trace[c->frames[c->to_frame].enter_trace.kind](a, c);
-	//real_print_flame_trace[c->frames[c->from_frame].return_trace.kind](a, c);
-
 	if (terminate) {
+		real_print_flame_trace[to_frame(c)->return_trace.kind](a, c);
 		a->delim = ' ';
-		//real_print_flame_trace[c->frames[c->from_frame].return_trace.kind](a, c);
-		printf("[to_frame=%d]", c->to_frame);
-		printf("%llu\n", (llu_t) c->frames[c->to_frame].return_time);
+		printf("%llu\n", (llu_t) to_frame(c)->return_time);
 		return;
+	} else {
+		real_print_flame_trace[to_frame(c)->enter_trace.kind](a, c);
 	}
 
 	c->to_frame++;
@@ -535,7 +527,6 @@ flame_recurse_callgraph(struct print_args *orig_a, struct callstack *orig_c)
 {
 	struct print_args a;
 	struct callstack c;
-	struct owl_metadata_entry *task;
 
 	memcpy(&a, orig_a, sizeof(a));
 	memcpy(&c, orig_c, sizeof(c));
@@ -544,14 +535,10 @@ flame_recurse_callgraph(struct print_args *orig_a, struct callstack *orig_c)
 	       orig_c->frames[0].return_task->comm,
 	       orig_c->frames[0].return_task->pid);
 	if (orig_c->to_frame > orig_c->from_frame) {
-		printf("[down]");
-		printf("[to_frame=%d]", orig_c->to_frame);
 		c.to_frame = 1;
 		c.from_frame = 0;
 		flame_recurse_down(&a, &c, orig_c->to_frame);
 	} else if (c.to_frame < c.from_frame) {
-		printf("[up]");
-		printf("[to_frame=%d]", orig_c->to_frame);
 		c.to_frame = 0;
 		c.from_frame = 1;
 		flame_recurse_up(&a, &c, orig_c->from_frame);
@@ -563,21 +550,28 @@ flame_recurse_callgraph(struct print_args *orig_a, struct callstack *orig_c)
 static void
 print_flame_uecall_trace(struct print_args *a, struct callstack *c)
 {
+	printf("ecall%c", a->delim);
 }
 
 static void
 print_flame_secall_trace(struct print_args *a, struct callstack *c)
 {
+	printf("mcall%c", a->delim);
 }
 
 static void
 print_flame_return_trace(struct print_args *a, struct callstack *c)
 {
+	printf("return%c", a->delim);
 }
 
 static void
 print_flame_exception_trace(struct print_args *a, struct callstack *c)
 {
+	const char *type;
+
+	describe_exception_frame(to_frame(c), &type, NULL, NULL, NULL);
+	printf("%s%c", type, a->delim);
 }
 
 static printfn_t print_flame_trace[8] = {
