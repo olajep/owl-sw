@@ -815,7 +815,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	from_frame = to_frame;
 
 	/* Initialize with sane values */
-	call_frame[0].enter_trace.kind = OWL_TRACE_KIND_UECALL;
+	call_frame[0].enter_trace.kind = 7; /* Should never be accessed */
 	call_frame[1].enter_trace.kind = OWL_TRACE_KIND_UECALL;
 	call_frame[2].enter_trace.kind = OWL_TRACE_KIND_SECALL;
 	call_frame[0].return_trace.kind = OWL_TRACE_KIND_RETURN;
@@ -827,7 +827,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	call_frame[0].return_task = current_task;
 	call_frame[1].return_task = current_task;
 	call_frame[2].return_task = current_task;
-	call_frame[0].enter_time = absclocks;
+	call_frame[0].enter_time = ~0; /* Should never be accessed */
 	call_frame[0].return_time  = absclocks;
 	call_frame[1].enter_time = absclocks;
 	call_frame[1].return_time  = absclocks;
