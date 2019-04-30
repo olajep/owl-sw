@@ -107,8 +107,7 @@ struct call_frame {
 
 struct callstack {
 	struct call_frame *frames;
-	int from_frame;	/* The current 'frame' we're at in the callstack */
-	int to_frame;	/* The 'frame' we're going to */
+	int frameno; /* The 'frame' we're at */
 };
 
 struct print_args {
@@ -172,36 +171,23 @@ full_pc(struct call_frame *frame, unsigned pc_bits,
 }
 
 static int
-to_frameno(struct callstack *c)
+this_frameno(struct callstack *c)
 {
-	return c->to_frame;
+	return c->frameno;
 }
 
 static struct call_frame *
-to_frame(struct callstack *c)
+this_frame(struct callstack *c)
 {
-	assert (0 <= c->to_frame && c->to_frame <= 2);
-	return &c->frames[c->to_frame];
-}
-
-static int
-from_frameno(struct callstack *c)
-{
-	return c->from_frame;
+	assert (0 <= c->frameno && c->frameno <= 2);
+	return &c->frames[c->frameno];
 }
 
 static struct call_frame *
-from_frame(struct callstack *c)
+frame_down(struct callstack *c)
 {
-	assert (0 <= c->from_frame && c->from_frame <= 2);
-	return &c->frames[c->from_frame];
-}
-
-static struct call_frame *
-get_frame(struct callstack *c, int frameno)
-{
-	assert (0 <= frameno && frameno <= 2);
-	return &c->frames[frameno];
+	assert (0 <= c->frameno && c->frameno < 2);
+	return &c->frames[c->frameno + 1];
 }
 
 const char *
@@ -226,20 +212,20 @@ const char *
 binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 	    uint64_t *offset)
 {
-	const struct owl_metadata_entry *task = to_frame(c)->return_task;
-	*pc = full_pc(to_frame(c), a->pc_bits, a->sign_extend_pc);
+	const struct owl_metadata_entry *task = this_frame(c)->return_task;
+	*pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
 	*offset = *pc;
 
 	const char *binary = "'none'";
-	if (to_frameno(c) == 0) {
+	if (this_frameno(c) == 0) {
 		struct owl_map_info *map;
 		struct map_search_key key = {
 			.pid = task->pid,
 			.pc = *pc
 		};
 
-		assert(from_frame(c)->enter_trace.kind == OWL_TRACE_KIND_UECALL ||
-		       from_frame(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
+		assert(frame_down(c)->enter_trace.kind == OWL_TRACE_KIND_UECALL ||
+		       frame_down(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
 
 		/* Detecting when we should use the parent's memory mapping
 		 * seems fragile. We might have to add timestamping to the
@@ -258,14 +244,14 @@ binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 			*offset = *pc - map->vm_start;
 		} else
 			binary = "'none'";
-	} else if (to_frameno(c) == 1) {
-		assert(from_frame(c)->enter_trace.kind == OWL_TRACE_KIND_SECALL ||
-		       from_frame(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
+	} else if (this_frameno(c) == 1) {
+		assert(frame_down(c)->enter_trace.kind == OWL_TRACE_KIND_SECALL ||
+		       frame_down(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
 		binary = "'vmlinux'";
 		/* offset = a->frame[a->to_frame].ret.pc |
 		 * 		$(objdump -f vmlinux | grep "start address) */
 	}
-	assert(to_frameno(c) < 2);
+	assert(this_frameno(c) < 2);
 
 	return binary;
 }
@@ -383,10 +369,10 @@ print_ecall_trace(struct print_args *a, struct callstack *c)
 	const char *type;
 	unsigned function;
 
-	describe_frame_enter(to_frame(c), &type, NULL, NULL, &function);
+	describe_frame_enter(this_frame(c), &type, NULL, NULL, &function);
 	/* TODO: Support hcall if we add support for it in H/W */
 	printf("@=[%020llu] %s\t\tfunction=[%05d]%c",
-	       (llu_t) to_frame(c)->enter_time, type, function, a->delim);
+	       (llu_t) this_frame(c)->enter_time, type, function, a->delim);
 }
 
 static void
@@ -398,15 +384,15 @@ print_return_trace(struct print_args *a, struct callstack *c)
 	uint64_t pc, offset;
 	const char *binary = "'none'";
 
-	pc = full_pc(to_frame(c), a->pc_bits, a->sign_extend_pc);
+	pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
 	offset = pc;
 
-	type = return_type(from_frame(c));
+	type = return_type(frame_down(c));
 	binary = binary_name(a, c, &pc, &offset);
 
 	printf("@=[%020llu] %-5s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]%c",
-	       (llu_t) to_frame(c)->return_time, type,
-	       (llu_t) pc, to_frame(c)->return_trace.ret.regval, binary,
+	       (llu_t) this_frame(c)->return_time, type,
+	       (llu_t) pc, this_frame(c)->return_trace.ret.regval, binary,
 	       (llu_t) offset, a->delim);
 }
 
@@ -416,9 +402,9 @@ print_exception_trace(struct print_args *a, struct callstack *c)
 	const char *type, *name, *desc;
 	unsigned cause;
 
-	describe_frame_enter(to_frame(c), &type, &name, &desc, &cause);
+	describe_frame_enter(this_frame(c), &type, &name, &desc, &cause);
 	printf("@=[%020llu] %s\t%s=[0x%03x] name=%s%c",
-	       (llu_t) to_frame(c)->enter_time, type, desc, cause, name,
+	       (llu_t) this_frame(c)->enter_time, type, desc, cause, name,
 	       a->delim);
 }
 
@@ -489,40 +475,38 @@ static printfn_t real_print_flame_trace[8];
 static void
 flame_recurse_down(struct print_args *a, struct callstack *c, int level)
 {
-	const bool terminate = c->to_frame == level;
+	const bool terminate = c->frameno == level;
 
 	a->delim = ';';
 	if (terminate) {
-		real_print_flame_trace[to_frame(c)->enter_trace.kind](a, c);
+		real_print_flame_trace[this_frame(c)->enter_trace.kind](a, c);
 		a->delim = ' ';
-		printf("%llu\n", (llu_t) to_frame(c)->enter_time);
+		printf("%llu\n", (llu_t) this_frame(c)->enter_time);
 		return;
 	} else {
-		real_print_flame_trace[to_frame(c)->enter_trace.kind](a, c);
+		real_print_flame_trace[this_frame(c)->enter_trace.kind](a, c);
 	}
 
-	c->to_frame++;
-	c->from_frame++;
+	c->frameno++;
 	flame_recurse_down(a, c, level);
 }
 
 static void
 flame_recurse_up(struct print_args *a, struct callstack *c, int level)
 {
-	const bool terminate = c->from_frame == level;
+	const bool terminate = c->frameno == level;
 
 	a->delim = ';';
 	if (terminate) {
-		real_print_flame_trace[to_frame(c)->return_trace.kind](a, c);
+		real_print_flame_trace[this_frame(c)->return_trace.kind](a, c);
 		a->delim = ' ';
-		printf("%llu\n", (llu_t) to_frame(c)->return_time);
+		printf("%llu\n", (llu_t) this_frame(c)->return_time);
 		return;
 	} else {
-		real_print_flame_trace[to_frame(c)->enter_trace.kind](a, c);
+		real_print_flame_trace[this_frame(c)->enter_trace.kind](a, c);
 	}
 
-	c->to_frame++;
-	c->from_frame++;
+	c->frameno++;
 	flame_recurse_up(a, c, level);
 }
 
@@ -535,24 +519,20 @@ flame_recurse_callgraph(struct print_args *orig_a, struct callstack *orig_c)
 	memcpy(&a, orig_a, sizeof(a));
 	memcpy(&c, orig_c, sizeof(c));
 
+	c.frameno = 0;
 	printf("%s/%d;",
 	       orig_c->frames[0].return_task->comm,
 	       orig_c->frames[0].return_task->pid);
-	if (orig_c->to_frame > orig_c->from_frame) {
-		c.to_frame = 1;
-		c.from_frame = 0;
-		flame_recurse_down(&a, &c, orig_c->to_frame);
-	} else if (c.to_frame < c.from_frame) {
-		c.to_frame = 0;
-		c.from_frame = 1;
-		flame_recurse_up(&a, &c, orig_c->from_frame);
-	} else
-		assert(0 && " this shouldn't happen");
-	return;
+	if (orig_a->trace.kind != OWL_TRACE_KIND_RETURN) {
+		flame_recurse_down(&a, &c, orig_c->frameno);
+	} else {
+		c.frameno = 0; /* or 1 ??? */
+		flame_recurse_up(&a, &c, orig_c->frameno);
+	}
 }
 
 static void
-print_flame_uecall_trace(struct print_args *a, struct callstack *c)
+print_flame_ecall_trace(struct print_args *a, struct callstack *c)
 {
 	printf("ecall%c", a->delim);
 }
@@ -574,7 +554,7 @@ print_flame_exception_trace(struct print_args *a, struct callstack *c)
 {
 	const char *type;
 
-	describe_exception_frame(to_frame(c), &type, NULL, NULL, NULL);
+	describe_exception_frame(this_frame(c), &type, NULL, NULL, NULL);
 	printf("%s%c", type, a->delim);
 }
 
@@ -589,7 +569,7 @@ static printfn_t print_flame_trace[8] = {
 	[7]				= print_invalid_trace,
 };
 static printfn_t real_print_flame_trace[8] = {
-	[OWL_TRACE_KIND_UECALL]		= print_flame_uecall_trace,
+	[OWL_TRACE_KIND_UECALL]		= print_flame_ecall_trace,
 	[OWL_TRACE_KIND_RETURN]		= print_flame_return_trace,
 	[OWL_TRACE_KIND_SECALL]		= print_flame_secall_trace,
 	[OWL_TRACE_KIND_TIMESTAMP]	= print_nop,
@@ -933,8 +913,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			};
 			struct callstack callstack = {
 				.frames			= call_frame,
-				.from_frame		= from_frame,
-				.to_frame		= to_frame,
+				.frameno		= to_frame,
 			};
 			printfn[trace.kind](&args, &callstack);
 		}

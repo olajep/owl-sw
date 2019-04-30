@@ -69,12 +69,11 @@ class callstack_printer:
     return None
 
   def children(self):
-    yield "from_frame", self.val["from_frame"]
-    yield "to_frame", self.val["to_frame"]
+    yield "frameno", self.val["frameno"]
     for field in self.val.type.fields():
       key = field.name
       val = self.val[key]
-      if key == "from_frame" or key == "to_frame": continue
+      if key == "frameno" or key == "frameno": continue
       elif key == "frames":
         if not val: yield key, "NULL"
         else:
