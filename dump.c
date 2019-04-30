@@ -208,11 +208,11 @@ const char *
 return_type(struct call_frame *frame)
 {
 	switch (frame->enter_trace.kind) {
-	case OWL_TRACE_KIND_UECALL: return "eret ";
-	case OWL_TRACE_KIND_SECALL: return "mret ";
+	case OWL_TRACE_KIND_UECALL: return "eret";
+	case OWL_TRACE_KIND_SECALL: return "mret";
 	case OWL_TRACE_KIND_EXCEPTION:
 		if (frame->enter_trace.exception.cause & 128)
-			return "iret ";
+			return "iret";
 		else
 			return "exret";
 	default:
@@ -401,9 +401,9 @@ print_return_trace(struct print_args *a, struct callstack *c)
 	offset = pc;
 
 	type = return_type(from_frame(c));
-	binary = binary_name(a, c, to_frameno(c), &pc, &offset);
+	binary = binary_name(a, c, &pc, &offset);
 
-	printf("@=[%020llu] %s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]%c",
+	printf("@=[%020llu] %-5s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]%c",
 	       (llu_t) to_frame(c)->return_time, type,
 	       (llu_t) pc, to_frame(c)->return_trace.ret.regval, binary,
 	       (llu_t) offset, a->delim);
