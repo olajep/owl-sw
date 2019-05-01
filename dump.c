@@ -255,6 +255,7 @@ binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 		assert(frame_down(c)->enter_trace.kind == OWL_TRACE_KIND_SECALL ||
 		       frame_down(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION);
 		binary = "'vmlinux'";
+		/* binary = "/boot/vmlinux"; */
 		/* offset = a->frame[a->to_frame].ret.pc |
 		 * 		$(objdump -f vmlinux | grep "start address) */
 	}
@@ -484,7 +485,7 @@ flame_recurse_down(struct print_args *a, struct callstack *c, int level)
 {
 	const bool terminate = c->frameno == level;
 
-	a->delim = ';';
+	a->delim = terminate ? ' ' : ';';
 	real_print_flame_trace[this_frame(c)->enter_trace.kind](a, c);
 	if (terminate) {
 		/* TODO: Print time delta */
@@ -501,7 +502,7 @@ flame_recurse_up(struct print_args *a, struct callstack *c, int level)
 {
 	const bool terminate = c->frameno == level;
 
-	a->delim = ';';
+	a->delim = terminate ? ' ' : ';';
 	if (terminate) {
 		real_print_flame_trace[this_frame(c)->return_trace.kind](a, c);
 		/* TODO: Print time delta */
@@ -543,12 +544,15 @@ print_flame_enter_trace(struct print_args *a, struct callstack *c)
 {
 	const char *type;
 	unsigned cause;
+	const char save_delim = a->delim;
 
 	describe_frame_enter(this_frame(c), &type, NULL, NULL, &cause);
 
+	a->delim = ';';
 	c->frameno--;
 	real_print_flame_trace[this_frame(c)->return_trace.kind](a, c);
 	c->frameno++;
+	a->delim = save_delim;
 
 	if (this_frame(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION) {
 		printf("%s/%d%c", type, cause, a->delim);
@@ -569,7 +573,7 @@ print_flame_return_trace(struct print_args *a, struct callstack *c)
 	offset = pc;
 	binary = binary_name(a, c, &pc, &offset);
 
-	printf("%s+0x%llx%c", binary, (llu_t) offset, a->delim);
+	printf("file://%s+0x%llx%c", binary, (llu_t) offset, a->delim);
 }
 
 static printfn_t print_flame_trace[8] = {
