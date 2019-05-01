@@ -478,13 +478,11 @@ flame_recurse_down(struct print_args *a, struct callstack *c, int level)
 	const bool terminate = c->frameno == level;
 
 	a->delim = ';';
+	real_print_flame_trace[this_frame(c)->enter_trace.kind](a, c);
 	if (terminate) {
-		real_print_flame_trace[this_frame(c)->enter_trace.kind](a, c);
-		a->delim = ' ';
+		/* TODO: Print time delta */
 		printf("%llu\n", (llu_t) this_frame(c)->enter_time);
 		return;
-	} else {
-		real_print_flame_trace[this_frame(c)->enter_trace.kind](a, c);
 	}
 
 	c->frameno++;
@@ -499,11 +497,13 @@ flame_recurse_up(struct print_args *a, struct callstack *c, int level)
 	a->delim = ';';
 	if (terminate) {
 		real_print_flame_trace[this_frame(c)->return_trace.kind](a, c);
-		a->delim = ' ';
+		/* TODO: Print time delta */
 		printf("%llu\n", (llu_t) this_frame(c)->return_time);
 		return;
 	} else {
+		c->frameno++;
 		real_print_flame_trace[this_frame(c)->enter_trace.kind](a, c);
+		c->frameno--;
 	}
 
 	c->frameno++;
@@ -516,46 +516,53 @@ flame_recurse_callgraph(struct print_args *orig_a, struct callstack *orig_c)
 	struct print_args a;
 	struct callstack c;
 
-	memcpy(&a, orig_a, sizeof(a));
-	memcpy(&c, orig_c, sizeof(c));
+	a = *orig_a;
+	c = *orig_c;
 
-	c.frameno = 0;
 	printf("%s/%d;",
 	       orig_c->frames[0].return_task->comm,
 	       orig_c->frames[0].return_task->pid);
 	if (orig_a->trace.kind != OWL_TRACE_KIND_RETURN) {
+		c.frameno = 1;
 		flame_recurse_down(&a, &c, orig_c->frameno);
 	} else {
-		c.frameno = 0; /* or 1 ??? */
+		c.frameno = 0;
 		flame_recurse_up(&a, &c, orig_c->frameno);
 	}
 }
 
 static void
-print_flame_ecall_trace(struct print_args *a, struct callstack *c)
+print_flame_enter_trace(struct print_args *a, struct callstack *c)
 {
-	printf("ecall%c", a->delim);
-}
+	const char *type;
+	unsigned cause;
 
-static void
-print_flame_secall_trace(struct print_args *a, struct callstack *c)
-{
-	printf("mcall%c", a->delim);
+	describe_frame_enter(this_frame(c), &type, NULL, NULL, &cause);
+
+	c->frameno--;
+	real_print_flame_trace[this_frame(c)->return_trace.kind](a, c);
+	c->frameno++;
+
+	if (this_frame(c)->enter_trace.kind == OWL_TRACE_KIND_EXCEPTION) {
+		printf("%s/%d%c", type, cause, a->delim);
+	} else {
+		printf("%s/%d=%d%c", type, cause,
+		       this_frame(c)->return_trace.ret.regval, a->delim);
+	}
 }
 
 static void
 print_flame_return_trace(struct print_args *a, struct callstack *c)
 {
-	printf("return%c", a->delim);
-}
+	/* TODO: Support hcall if we add support for it in H/W */
+	uint64_t pc, offset;
+	const char *binary = "'none'";
 
-static void
-print_flame_exception_trace(struct print_args *a, struct callstack *c)
-{
-	const char *type;
+	pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
+	offset = pc;
+	binary = binary_name(a, c, &pc, &offset);
 
-	describe_exception_frame(this_frame(c), &type, NULL, NULL, NULL);
-	printf("%s%c", type, a->delim);
+	printf("%s+0x%llx%c", binary, (llu_t) offset, a->delim);
 }
 
 static printfn_t print_flame_trace[8] = {
@@ -569,11 +576,11 @@ static printfn_t print_flame_trace[8] = {
 	[7]				= print_invalid_trace,
 };
 static printfn_t real_print_flame_trace[8] = {
-	[OWL_TRACE_KIND_UECALL]		= print_flame_ecall_trace,
+	[OWL_TRACE_KIND_UECALL]		= print_flame_enter_trace,
 	[OWL_TRACE_KIND_RETURN]		= print_flame_return_trace,
-	[OWL_TRACE_KIND_SECALL]		= print_flame_secall_trace,
+	[OWL_TRACE_KIND_SECALL]		= print_flame_enter_trace,
 	[OWL_TRACE_KIND_TIMESTAMP]	= print_nop,
-	[OWL_TRACE_KIND_EXCEPTION]	= print_flame_exception_trace,
+	[OWL_TRACE_KIND_EXCEPTION]	= print_flame_enter_trace,
 	[OWL_TRACE_KIND_PCHI]		= print_nop,
 	[6]				= print_invalid_trace,
 	[7]				= print_invalid_trace,
