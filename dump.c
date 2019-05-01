@@ -190,6 +190,13 @@ frame_down(struct callstack *c)
 	return &c->frames[c->frameno + 1];
 }
 
+static struct call_frame *
+frame_up(struct callstack *c)
+{
+	assert (1 <= c->frameno && c->frameno <= 2);
+	return &c->frames[c->frameno - 1];
+}
+
 const char *
 return_type(struct call_frame *frame)
 {
@@ -547,7 +554,7 @@ print_flame_enter_trace(struct print_args *a, struct callstack *c)
 		printf("%s/%d%c", type, cause, a->delim);
 	} else {
 		printf("%s/%d=%d%c", type, cause,
-		       this_frame(c)->return_trace.ret.regval, a->delim);
+		       frame_up(c)->return_trace.ret.regval, a->delim);
 	}
 }
 
