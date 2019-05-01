@@ -686,7 +686,7 @@ try_populate_frame(const uint8_t *tracebuf, size_t i, size_t tracebuf_size,
 	union owl_trace trace;
 	union owl_trace return_trace = { .kind = OWL_TRACE_KIND_RETURN, 0 };
 	int rel_frame = 0;
-	bool stop = false;
+	bool found = false;
 
 	while (i < tracebuf_size) {
 		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
@@ -708,16 +708,19 @@ try_populate_frame(const uint8_t *tracebuf, size_t i, size_t tracebuf_size,
 			rel_frame--;
 			if (rel_frame == 0) {
 				return_trace = trace;
-				stop = true;
+				found = true;
 			}
 			break;
 		}
 
-		if (stop)
+		if (found)
 			break;
 
 		i += owl_trace_size(trace);
 	}
+
+	frame->return_trace = return_trace;
+	assert(found);
 
 	/* H/W writes the PCHI trace after the normal
 	 * trace so we need to look forward in the
@@ -880,8 +883,6 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				/* H/W writes the PCHI trace after the normal
 				 * trace so we need to look forward in the
 				 * buffer to find it. */
-				try_find_pchi(tracebuf, i, tracebuf_size,
-					      &call_frame[to_frame]);
 				try_find_pchi(tracebuf, i, tracebuf_size,
 					      &call_frame[to_frame]);
 				call_frame[to_frame].return_trace = trace;
