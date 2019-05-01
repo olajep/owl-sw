@@ -1,0 +1,1573 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="150" onload="init(evt)" viewBox="0 0 1200 150" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="150.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Chart</text>
+<text id="details" x="10.00" y="133" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="133" > </text>
+<g id="frames">
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (88,543,866,207,239 samples, 5.03%)</title><rect x="513.9" y="69" width="59.3" height="15.0" fill="rgb(242,98,53)" rx="2" ry="2" />
+<text  x="516.88" y="79.5" >file:/..</text>
+</g>
+<g >
+<title>ecall/73=1 (3,050,668,683,016 samples, 0.17%)</title><rect x="573.3" y="53" width="2.0" height="15.0" fill="rgb(239,127,42)" rx="2" ry="2" />
+<text  x="576.27" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x8065c (691,907,393,142 samples, 0.04%)</title><rect x="228.0" y="69" width="0.5" height="15.0" fill="rgb(250,205,16)" rx="2" ry="2" />
+<text  x="231.03" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/56=2046 (1,482,664,423,768 samples, 0.08%)</title><rect x="860.5" y="53" width="1.0" height="15.0" fill="rgb(211,149,50)" rx="2" ry="2" />
+<text  x="863.54" y="63.5" ></text>
+</g>
+<g >
+<title>ash/46 (111,264,674,692,670 samples, 6.32%)</title><rect x="133.6" y="85" width="74.6" height="15.0" fill="rgb(230,110,54)" rx="2" ry="2" />
+<text  x="136.63" y="95.5" >ash/46</text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,773,099,269 samples, 0.01%)</title><rect x="223.4" y="37" width="0.1" height="15.0" fill="rgb(220,74,30)" rx="2" ry="2" />
+<text  x="226.43" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/260=0 (1,395,829,194,040 samples, 0.08%)</title><rect x="441.4" y="53" width="0.9" height="15.0" fill="rgb(242,215,30)" rx="2" ry="2" />
+<text  x="444.38" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x745e (1,488,056,119,274 samples, 0.08%)</title><rect x="448.4" y="69" width="1.0" height="15.0" fill="rgb(218,33,13)" rx="2" ry="2" />
+<text  x="451.37" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (203,482,684,744 samples, 0.01%)</title><rect x="226.0" y="69" width="0.2" height="15.0" fill="rgb(223,63,42)" rx="2" ry="2" />
+<text  x="229.04" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x8065c (696,517,216,597 samples, 0.04%)</title><rect x="940.4" y="69" width="0.4" height="15.0" fill="rgb(232,131,45)" rx="2" ry="2" />
+<text  x="943.38" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,282,688,503,606 samples, 0.24%)</title><rect x="798.6" y="53" width="2.9" height="15.0" fill="rgb(237,172,50)" rx="2" ry="2" />
+<text  x="801.63" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (114,934,384,284,939 samples, 6.53%)</title><rect x="942.4" y="53" width="77.0" height="15.0" fill="rgb(235,34,31)" rx="2" ry="2" />
+<text  x="945.36" y="63.5" >ecall/73=1</text>
+</g>
+<g >
+<title>ecall/260=0 (2,872,457,195,488 samples, 0.16%)</title><rect x="802.6" y="53" width="1.9" height="15.0" fill="rgb(252,42,52)" rx="2" ry="2" />
+<text  x="805.61" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,679,310,318,567 samples, 0.21%)</title><rect x="1038.3" y="53" width="2.5" height="15.0" fill="rgb(232,104,1)" rx="2" ry="2" />
+<text  x="1041.34" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (1,391,317,269,488 samples, 0.08%)</title><rect x="69.3" y="69" width="0.9" height="15.0" fill="rgb(214,57,51)" rx="2" ry="2" />
+<text  x="72.28" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,186,796,792,256 samples, 0.18%)</title><rect x="1019.4" y="53" width="2.2" height="15.0" fill="rgb(220,38,31)" rx="2" ry="2" />
+<text  x="1022.44" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,546,445,761,482 samples, 0.20%)</title><rect x="791.2" y="53" width="2.4" height="15.0" fill="rgb(206,170,13)" rx="2" ry="2" />
+<text  x="794.23" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,049,092,587,177 samples, 0.17%)</title><rect x="144.5" y="69" width="2.1" height="15.0" fill="rgb(238,71,25)" rx="2" ry="2" />
+<text  x="147.55" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,311,739,328,200 samples, 0.19%)</title><rect x="1118.0" y="53" width="2.2" height="15.0" fill="rgb(253,227,46)" rx="2" ry="2" />
+<text  x="1120.97" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x64226 (1,495,227,317,664 samples, 0.08%)</title><rect x="936.6" y="69" width="1.0" height="15.0" fill="rgb(251,43,40)" rx="2" ry="2" />
+<text  x="939.57" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (45,385,535,796,854 samples, 2.58%)</title><rect x="1083.2" y="53" width="30.4" height="15.0" fill="rgb(207,144,6)" rx="2" ry="2" />
+<text  x="1086.18" y="63.5" >ec..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (11,739,609,088,127 samples, 0.67%)</title><rect x="217.8" y="69" width="7.9" height="15.0" fill="rgb(227,52,0)" rx="2" ry="2" />
+<text  x="220.81" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (4,216,498,421,781 samples, 0.24%)</title><rect x="368.5" y="69" width="2.8" height="15.0" fill="rgb(213,179,22)" rx="2" ry="2" />
+<text  x="371.50" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (47,258,210,052,590 samples, 2.68%)</title><rect x="407.7" y="53" width="31.6" height="15.0" fill="rgb(206,122,48)" rx="2" ry="2" />
+<text  x="410.66" y="63.5" >ec..</text>
+</g>
+<g >
+<title>ecall/64=7 (1,526,251,462,443 samples, 0.09%)</title><rect x="941.3" y="53" width="1.1" height="15.0" fill="rgb(233,148,25)" rx="2" ry="2" />
+<text  x="944.33" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (5,367,732,820,078 samples, 0.30%)</title><rect x="373.6" y="53" width="3.6" height="15.0" fill="rgb(220,164,33)" rx="2" ry="2" />
+<text  x="376.65" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/139=78 (686,274,312,367 samples, 0.04%)</title><rect x="940.4" y="53" width="0.4" height="15.0" fill="rgb(206,61,40)" rx="2" ry="2" />
+<text  x="943.38" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,655,221,423,061 samples, 0.21%)</title><rect x="54.9" y="69" width="2.4" height="15.0" fill="rgb(236,11,26)" rx="2" ry="2" />
+<text  x="57.85" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (2,938,689,306,508 samples, 0.17%)</title><rect x="580.7" y="69" width="1.9" height="15.0" fill="rgb(250,45,42)" rx="2" ry="2" />
+<text  x="583.65" y="79.5" ></text>
+</g>
+<g >
+<title>whoami/74 (92,686,771,966,099 samples, 5.26%)</title><rect x="71.5" y="85" width="62.1" height="15.0" fill="rgb(244,110,29)" rx="2" ry="2" />
+<text  x="74.52" y="95.5" >whoami..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,780,978,663,678 samples, 0.21%)</title><rect x="146.6" y="69" width="2.6" height="15.0" fill="rgb(214,182,46)" rx="2" ry="2" />
+<text  x="149.64" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,188,561,176,295 samples, 0.18%)</title><rect x="786.8" y="69" width="2.2" height="15.0" fill="rgb(205,223,34)" rx="2" ry="2" />
+<text  x="789.85" y="79.5" ></text>
+</g>
+<g >
+<title>file:///bin/busybox+0x4d49e (3,542,663,517,278 samples, 0.20%)</title><rect x="10.0" y="69" width="2.4" height="15.0" fill="rgb(214,213,4)" rx="2" ry="2" />
+<text  x="13.05" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (2,933,128,812,263 samples, 0.17%)</title><rect x="366.5" y="69" width="1.9" height="15.0" fill="rgb(205,91,35)" rx="2" ry="2" />
+<text  x="369.48" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,764,900,915,865 samples, 0.27%)</title><rect x="575.4" y="53" width="3.2" height="15.0" fill="rgb(214,112,12)" rx="2" ry="2" />
+<text  x="578.37" y="63.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,764,169,407 samples, 0.01%)</title><rect x="220.6" y="37" width="0.1" height="15.0" fill="rgb(239,204,18)" rx="2" ry="2" />
+<text  x="223.64" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/94=17 (3,636,121,793,890 samples, 0.21%)</title><rect x="937.9" y="53" width="2.5" height="15.0" fill="rgb(214,217,27)" rx="2" ry="2" />
+<text  x="940.94" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,462,358,523,235 samples, 0.08%)</title><rect x="862.9" y="53" width="1.0" height="15.0" fill="rgb(232,217,36)" rx="2" ry="2" />
+<text  x="865.95" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,741,476,746,353 samples, 0.27%)</title><rect x="51.6" y="53" width="3.2" height="15.0" fill="rgb(214,174,11)" rx="2" ry="2" />
+<text  x="54.61" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/94=17 (3,542,663,517,278 samples, 0.20%)</title><rect x="10.0" y="53" width="2.4" height="15.0" fill="rgb(247,111,0)" rx="2" ry="2" />
+<text  x="13.05" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x537e (81,633,044,946,804 samples, 4.64%)</title><rect x="73.6" y="69" width="54.7" height="15.0" fill="rgb(218,22,6)" rx="2" ry="2" />
+<text  x="76.55" y="79.5" >file:..</text>
+</g>
+<g >
+<title>interrupt/5 (1,452,292,286,734 samples, 0.08%)</title><rect x="70.5" y="53" width="1.0" height="15.0" fill="rgb(249,70,35)" rx="2" ry="2" />
+<text  x="73.54" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (5,010,224,654,375 samples, 0.28%)</title><rect x="582.8" y="53" width="3.3" height="15.0" fill="rgb(246,86,54)" rx="2" ry="2" />
+<text  x="585.76" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x2ea3e (1,525,478,032,084 samples, 0.09%)</title><rect x="214.2" y="69" width="1.1" height="15.0" fill="rgb(244,45,20)" rx="2" ry="2" />
+<text  x="217.25" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (24,840,762,017,679 samples, 1.41%)</title><rect x="1021.6" y="69" width="16.7" height="15.0" fill="rgb(240,81,13)" rx="2" ry="2" />
+<text  x="1024.64" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,655,540,224,939 samples, 0.21%)</title><rect x="62.0" y="69" width="2.4" height="15.0" fill="rgb(254,192,6)" rx="2" ry="2" />
+<text  x="64.96" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (5,377,918,481,269 samples, 0.31%)</title><rect x="373.6" y="69" width="3.7" height="15.0" fill="rgb(221,66,52)" rx="2" ry="2" />
+<text  x="376.65" y="79.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,832,240,071 samples, 0.01%)</title><rect x="261.0" y="37" width="0.1" height="15.0" fill="rgb(206,87,27)" rx="2" ry="2" />
+<text  x="263.96" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/56=4 (82,380,988,508,248 samples, 4.68%)</title><rect x="874.2" y="53" width="55.2" height="15.0" fill="rgb(254,188,19)" rx="2" ry="2" />
+<text  x="877.18" y="63.5" >ecall..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (406,972,537,881 samples, 0.02%)</title><rect x="226.2" y="69" width="0.3" height="15.0" fill="rgb(223,83,10)" rx="2" ry="2" />
+<text  x="229.21" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0xa55c (1,493,474,573,432 samples, 0.08%)</title><rect x="867.3" y="69" width="1.0" height="15.0" fill="rgb(213,60,33)" rx="2" ry="2" />
+<text  x="870.25" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,171,232,614,460 samples, 0.18%)</title><rect x="149.2" y="69" width="2.2" height="15.0" fill="rgb(240,200,44)" rx="2" ry="2" />
+<text  x="152.23" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (776,848,838,907 samples, 0.04%)</title><rect x="801.9" y="69" width="0.5" height="15.0" fill="rgb(220,202,8)" rx="2" ry="2" />
+<text  x="804.87" y="79.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,767,950,922 samples, 0.01%)</title><rect x="221.8" y="37" width="0.1" height="15.0" fill="rgb(249,101,53)" rx="2" ry="2" />
+<text  x="224.81" y="47.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (4,427,726,989,274 samples, 0.25%)</title><rect x="1043.1" y="69" width="2.9" height="15.0" fill="rgb(253,51,29)" rx="2" ry="2" />
+<text  x="1046.07" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (82,603,753,576,808 samples, 4.69%)</title><rect x="151.7" y="69" width="55.3" height="15.0" fill="rgb(209,155,10)" rx="2" ry="2" />
+<text  x="154.69" y="79.5" >file:..</text>
+</g>
+<g >
+<title>ash/46 (86,235,225,912,660 samples, 4.90%)</title><rect x="12.4" y="85" width="57.8" height="15.0" fill="rgb(239,78,38)" rx="2" ry="2" />
+<text  x="15.42" y="95.5" >ash/46</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,188,647,973,412 samples, 0.18%)</title><rect x="789.0" y="69" width="2.2" height="15.0" fill="rgb(205,211,33)" rx="2" ry="2" />
+<text  x="792.04" y="79.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (163,451,759,567 samples, 0.01%)</title><rect x="726.9" y="37" width="0.1" height="15.0" fill="rgb(214,99,12)" rx="2" ry="2" />
+<text  x="729.86" y="47.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (4,775,104,308,001 samples, 0.27%)</title><rect x="575.4" y="69" width="3.2" height="15.0" fill="rgb(239,66,32)" rx="2" ry="2" />
+<text  x="578.37" y="79.5" ></text>
+</g>
+<g >
+<title>file:///bin/busybox+0x4d49e (3,636,121,793,890 samples, 0.21%)</title><rect x="937.9" y="69" width="2.5" height="15.0" fill="rgb(217,205,45)" rx="2" ry="2" />
+<text  x="940.94" y="79.5" ></text>
+</g>
+<g >
+<title>all (1,760,845,728,958,554 samples, 100%)</title><rect x="10.0" y="101" width="1180.0" height="15.0" fill="rgb(206,104,26)" rx="2" ry="2" />
+<text  x="13.00" y="111.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0xf10 (1,589,753,426,407 samples, 0.09%)</title><rect x="1157.1" y="69" width="1.1" height="15.0" fill="rgb(220,133,8)" rx="2" ry="2" />
+<text  x="1160.13" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,214,475,695,119 samples, 0.24%)</title><rect x="586.2" y="53" width="2.9" height="15.0" fill="rgb(214,198,14)" rx="2" ry="2" />
+<text  x="589.24" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/139=75 (681,732,280,285 samples, 0.04%)</title><rect x="228.0" y="53" width="0.5" height="15.0" fill="rgb(225,46,18)" rx="2" ry="2" />
+<text  x="231.03" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (244,123,085,460 samples, 0.01%)</title><rect x="217.2" y="69" width="0.1" height="15.0" fill="rgb(234,173,16)" rx="2" ry="2" />
+<text  x="220.18" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (386,536,525,532 samples, 0.02%)</title><rect x="217.4" y="69" width="0.2" height="15.0" fill="rgb(215,103,13)" rx="2" ry="2" />
+<text  x="220.37" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97ebc (1,514,233,882,246 samples, 0.09%)</title><rect x="870.0" y="69" width="1.0" height="15.0" fill="rgb(223,13,5)" rx="2" ry="2" />
+<text  x="872.98" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9bbea (204,242,935,907 samples, 0.01%)</title><rect x="658.8" y="69" width="0.1" height="15.0" fill="rgb(251,173,45)" rx="2" ry="2" />
+<text  x="661.76" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (88,533,663,446,614 samples, 5.03%)</title><rect x="513.9" y="53" width="59.3" height="15.0" fill="rgb(211,94,22)" rx="2" ry="2" />
+<text  x="516.88" y="63.5" >ecall/..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x484fe (1,495,081,738,291 samples, 0.08%)</title><rect x="935.2" y="69" width="1.0" height="15.0" fill="rgb(227,212,6)" rx="2" ry="2" />
+<text  x="938.21" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x6034e (92,625,189,505,976 samples, 5.26%)</title><rect x="662.5" y="69" width="62.1" height="15.0" fill="rgb(225,121,22)" rx="2" ry="2" />
+<text  x="665.53" y="79.5" >file:/..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,075,999,469,539 samples, 0.17%)</title><rect x="1120.3" y="69" width="2.0" height="15.0" fill="rgb(241,134,13)" rx="2" ry="2" />
+<text  x="1123.25" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (2,256,175,637,137 samples, 0.13%)</title><rect x="1153.8" y="69" width="1.5" height="15.0" fill="rgb(240,40,37)" rx="2" ry="2" />
+<text  x="1156.77" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (4,170,118,302,968 samples, 0.24%)</title><rect x="795.8" y="69" width="2.8" height="15.0" fill="rgb(249,35,32)" rx="2" ry="2" />
+<text  x="798.78" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/56=4 (1,504,740,613,386 samples, 0.09%)</title><rect x="929.7" y="53" width="1.0" height="15.0" fill="rgb(236,37,53)" rx="2" ry="2" />
+<text  x="932.66" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (1,536,494,787,730 samples, 0.09%)</title><rect x="941.3" y="69" width="1.1" height="15.0" fill="rgb(209,7,44)" rx="2" ry="2" />
+<text  x="944.33" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x115ae (1,510,916,384,255 samples, 0.09%)</title><rect x="652.0" y="69" width="1.0" height="15.0" fill="rgb(243,128,13)" rx="2" ry="2" />
+<text  x="655.02" y="79.5" ></text>
+</g>
+<g >
+<title>file:///bin/busybox+0x4d49e (2,205,135,726,446 samples, 0.13%)</title><rect x="132.2" y="69" width="1.4" height="15.0" fill="rgb(236,223,14)" rx="2" ry="2" />
+<text  x="135.15" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x8ce0 (1,497,733,454,353 samples, 0.09%)</title><rect x="1188.5" y="69" width="1.0" height="15.0" fill="rgb(250,28,9)" rx="2" ry="2" />
+<text  x="1191.46" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x8065c (713,885,450,664 samples, 0.04%)</title><rect x="512.9" y="69" width="0.4" height="15.0" fill="rgb(238,37,46)" rx="2" ry="2" />
+<text  x="515.86" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0xa146c (1,484,985,568,577 samples, 0.08%)</title><rect x="215.7" y="69" width="1.0" height="15.0" fill="rgb(227,30,3)" rx="2" ry="2" />
+<text  x="218.68" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/222=0 (1,477,720,526,348 samples, 0.08%)</title><rect x="446.8" y="53" width="1.0" height="15.0" fill="rgb(228,220,36)" rx="2" ry="2" />
+<text  x="449.77" y="63.5" ></text>
+</g>
+<g >
+<title>file:///bin/busybox+0x4d49e (3,666,557,707,450 samples, 0.21%)</title><rect x="659.2" y="69" width="2.4" height="15.0" fill="rgb(244,210,50)" rx="2" ry="2" />
+<text  x="662.18" y="79.5" ></text>
+</g>
+<g >
+<title>owl/73 (3,613,717,174,062 samples, 0.21%)</title><rect x="10.0" y="85" width="2.4" height="15.0" fill="rgb(216,76,18)" rx="2" ry="2" />
+<text  x="13.00" y="95.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (4,751,629,983,548 samples, 0.27%)</title><rect x="51.6" y="69" width="3.2" height="15.0" fill="rgb(240,97,38)" rx="2" ry="2" />
+<text  x="54.61" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/56=4 (1,484,698,079,267 samples, 0.08%)</title><rect x="933.8" y="53" width="1.0" height="15.0" fill="rgb(237,190,53)" rx="2" ry="2" />
+<text  x="936.81" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (2,952,725,603,787 samples, 0.17%)</title><rect x="1113.7" y="69" width="1.9" height="15.0" fill="rgb(209,88,38)" rx="2" ry="2" />
+<text  x="1116.66" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97b8a (285,458,291,044 samples, 0.02%)</title><rect x="453.1" y="69" width="0.2" height="15.0" fill="rgb(242,103,0)" rx="2" ry="2" />
+<text  x="456.10" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/94=17 (2,309,730,184,028 samples, 0.13%)</title><rect x="226.5" y="53" width="1.5" height="15.0" fill="rgb(240,226,19)" rx="2" ry="2" />
+<text  x="229.48" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (2,928,485,404,233 samples, 0.17%)</title><rect x="580.7" y="53" width="1.9" height="15.0" fill="rgb(217,32,21)" rx="2" ry="2" />
+<text  x="583.65" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,971,957,190,643 samples, 0.28%)</title><rect x="1079.8" y="53" width="3.3" height="15.0" fill="rgb(228,9,2)" rx="2" ry="2" />
+<text  x="1082.79" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x60c0 (1,487,766,585,484 samples, 0.08%)</title><rect x="444.3" y="69" width="1.0" height="15.0" fill="rgb(224,198,14)" rx="2" ry="2" />
+<text  x="447.26" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97b0a (1,514,085,369,387 samples, 0.09%)</title><rect x="868.6" y="69" width="1.1" height="15.0" fill="rgb(240,102,54)" rx="2" ry="2" />
+<text  x="871.64" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (771,786,655,161 samples, 0.04%)</title><rect x="68.5" y="69" width="0.6" height="15.0" fill="rgb(220,106,12)" rx="2" ry="2" />
+<text  x="71.54" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0xf10 (1,582,224,483,312 samples, 0.09%)</title><rect x="650.5" y="69" width="1.1" height="15.0" fill="rgb(246,61,45)" rx="2" ry="2" />
+<text  x="653.52" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x8065c (691,014,675,509 samples, 0.04%)</title><rect x="133.6" y="69" width="0.5" height="15.0" fill="rgb(234,134,42)" rx="2" ry="2" />
+<text  x="136.64" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (2,872,457,195,488 samples, 0.16%)</title><rect x="802.6" y="69" width="1.9" height="15.0" fill="rgb(238,57,44)" rx="2" ry="2" />
+<text  x="805.61" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (1,392,775,555,096 samples, 0.08%)</title><rect x="207.3" y="69" width="0.9" height="15.0" fill="rgb(217,214,48)" rx="2" ry="2" />
+<text  x="210.26" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (7,876,025,867,091 samples, 0.45%)</title><rect x="134.6" y="53" width="5.3" height="15.0" fill="rgb(234,139,47)" rx="2" ry="2" />
+<text  x="137.60" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,066,175,658,928 samples, 0.17%)</title><rect x="793.7" y="69" width="2.0" height="15.0" fill="rgb(211,192,54)" rx="2" ry="2" />
+<text  x="796.67" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/64=73 (11,607,350,497,089 samples, 0.66%)</title><rect x="217.8" y="53" width="7.8" height="15.0" fill="rgb(252,46,6)" rx="2" ry="2" />
+<text  x="220.81" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,457,766,250,365 samples, 0.08%)</title><rect x="451.7" y="53" width="0.9" height="15.0" fill="rgb(227,170,45)" rx="2" ry="2" />
+<text  x="454.67" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (92,604,366,941,666 samples, 5.26%)</title><rect x="724.7" y="53" width="62.1" height="15.0" fill="rgb(235,68,28)" rx="2" ry="2" />
+<text  x="727.73" y="63.5" >ecall/..</text>
+</g>
+<g >
+<title>ecall/73=1 (3,645,067,889,264 samples, 0.21%)</title><rect x="54.9" y="53" width="2.4" height="15.0" fill="rgb(246,57,32)" rx="2" ry="2" />
+<text  x="57.85" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (5,605,355,832,518 samples, 0.32%)</title><rect x="64.5" y="69" width="3.7" height="15.0" fill="rgb(227,137,1)" rx="2" ry="2" />
+<text  x="67.46" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0xf10 (934,441,160,198 samples, 0.05%)</title><rect x="71.9" y="69" width="0.6" height="15.0" fill="rgb(233,11,8)" rx="2" ry="2" />
+<text  x="74.88" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/56=2046 (1,480,289,568,800 samples, 0.08%)</title><rect x="652.0" y="53" width="1.0" height="15.0" fill="rgb(207,1,5)" rx="2" ry="2" />
+<text  x="655.02" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (2,924,352,131,732 samples, 0.17%)</title><rect x="59.9" y="69" width="2.0" height="15.0" fill="rgb(253,197,16)" rx="2" ry="2" />
+<text  x="62.94" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x8ce8 (183,443,281,498 samples, 0.01%)</title><rect x="447.8" y="69" width="0.1" height="15.0" fill="rgb(217,227,7)" rx="2" ry="2" />
+<text  x="450.79" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/57=0 (1,504,881,992,160 samples, 0.09%)</title><rect x="931.1" y="53" width="1.0" height="15.0" fill="rgb(214,35,18)" rx="2" ry="2" />
+<text  x="934.08" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,999,357,006,476 samples, 0.28%)</title><rect x="345.9" y="53" width="3.3" height="15.0" fill="rgb(237,58,18)" rx="2" ry="2" />
+<text  x="348.89" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x6579c (1,472,603,926,441 samples, 0.08%)</title><rect x="70.5" y="69" width="1.0" height="15.0" fill="rgb(246,118,34)" rx="2" ry="2" />
+<text  x="73.53" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,299,973,213,147 samples, 0.19%)</title><rect x="371.4" y="69" width="2.2" height="15.0" fill="rgb(241,32,54)" rx="2" ry="2" />
+<text  x="374.38" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (2,241,379,713,924 samples, 0.13%)</title><rect x="439.7" y="69" width="1.5" height="15.0" fill="rgb(244,83,13)" rx="2" ry="2" />
+<text  x="442.66" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,187,459,151,242 samples, 0.18%)</title><rect x="1040.9" y="53" width="2.1" height="15.0" fill="rgb(232,78,35)" rx="2" ry="2" />
+<text  x="1043.87" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/220=74 (761,631,250,104 samples, 0.04%)</title><rect x="68.5" y="53" width="0.6" height="15.0" fill="rgb(205,211,13)" rx="2" ry="2" />
+<text  x="71.54" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x8ce8 (1,654,003,172,469 samples, 0.09%)</title><rect x="654.3" y="69" width="1.1" height="15.0" fill="rgb(254,202,42)" rx="2" ry="2" />
+<text  x="657.34" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97b8a (570,894,765,763 samples, 0.03%)</title><rect x="452.7" y="69" width="0.4" height="15.0" fill="rgb(205,75,21)" rx="2" ry="2" />
+<text  x="455.70" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x2cbd4 (1,511,209,971,987 samples, 0.09%)</title><rect x="656.1" y="69" width="1.1" height="15.0" fill="rgb(246,175,20)" rx="2" ry="2" />
+<text  x="659.14" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,777,176,677,729 samples, 0.21%)</title><rect x="57.4" y="69" width="2.5" height="15.0" fill="rgb(215,209,12)" rx="2" ry="2" />
+<text  x="60.36" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (163,402,727,270 samples, 0.01%)</title><rect x="659.0" y="69" width="0.2" height="15.0" fill="rgb(226,57,8)" rx="2" ry="2" />
+<text  x="662.04" y="79.5" ></text>
+</g>
+<g >
+<title>dmesg/75 (27,056,715,342,181 samples, 1.54%)</title><rect x="209.9" y="85" width="18.1" height="15.0" fill="rgb(233,63,44)" rx="2" ry="2" />
+<text  x="212.90" y="95.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,454,145,396,892 samples, 0.08%)</title><rect x="212.7" y="53" width="0.9" height="15.0" fill="rgb(251,177,12)" rx="2" ry="2" />
+<text  x="215.65" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/260=0 (1,398,378,690,686 samples, 0.08%)</title><rect x="648.9" y="53" width="0.9" height="15.0" fill="rgb(218,4,24)" rx="2" ry="2" />
+<text  x="651.90" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,464,361,012,549 samples, 0.08%)</title><rect x="935.2" y="53" width="1.0" height="15.0" fill="rgb(235,201,44)" rx="2" ry="2" />
+<text  x="938.22" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,466,958,227,662 samples, 0.08%)</title><rect x="1188.5" y="53" width="1.0" height="15.0" fill="rgb(225,3,45)" rx="2" ry="2" />
+<text  x="1191.47" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (2,706,300,638,531 samples, 0.15%)</title><rect x="1077.9" y="69" width="1.8" height="15.0" fill="rgb(221,32,54)" rx="2" ry="2" />
+<text  x="1080.92" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,159,897,266,024 samples, 0.24%)</title><rect x="795.8" y="53" width="2.8" height="15.0" fill="rgb(209,65,53)" rx="2" ry="2" />
+<text  x="798.78" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/220=76 (2,231,191,370,192 samples, 0.13%)</title><rect x="439.7" y="53" width="1.5" height="15.0" fill="rgb(240,25,24)" rx="2" ry="2" />
+<text  x="442.66" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x7d662 (1,513,786,342,473 samples, 0.09%)</title><rect x="866.1" y="69" width="1.0" height="15.0" fill="rgb(232,72,19)" rx="2" ry="2" />
+<text  x="869.09" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97b8a (530,081,104,911 samples, 0.03%)</title><rect x="451.3" y="69" width="0.4" height="15.0" fill="rgb(252,28,8)" rx="2" ry="2" />
+<text  x="454.30" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/79=0 (1,478,010,703,449 samples, 0.08%)</title><rect x="450.0" y="53" width="1.0" height="15.0" fill="rgb(226,87,48)" rx="2" ry="2" />
+<text  x="453.00" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,536,849,138,315 samples, 0.20%)</title><rect x="142.1" y="69" width="2.4" height="15.0" fill="rgb(236,51,54)" rx="2" ry="2" />
+<text  x="145.12" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/79=0 (1,503,855,028,997 samples, 0.09%)</title><rect x="868.6" y="53" width="1.0" height="15.0" fill="rgb(234,42,5)" rx="2" ry="2" />
+<text  x="871.64" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97ebc (1,494,937,400,925 samples, 0.08%)</title><rect x="933.8" y="69" width="1.0" height="15.0" fill="rgb(244,41,4)" rx="2" ry="2" />
+<text  x="936.81" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x59d32 (1,494,059,403,155 samples, 0.08%)</title><rect x="872.8" y="69" width="1.0" height="15.0" fill="rgb(222,26,23)" rx="2" ry="2" />
+<text  x="875.79" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x8ce8 (182,870,106,138 samples, 0.01%)</title><rect x="129.0" y="69" width="0.1" height="15.0" fill="rgb(248,125,52)" rx="2" ry="2" />
+<text  x="131.95" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,206,313,469,376 samples, 0.24%)</title><rect x="368.5" y="53" width="2.8" height="15.0" fill="rgb(215,43,31)" rx="2" ry="2" />
+<text  x="371.50" y="63.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,826,965,996 samples, 0.01%)</title><rect x="259.3" y="37" width="0.2" height="15.0" fill="rgb(217,2,53)" rx="2" ry="2" />
+<text  x="262.34" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/221=0 (1,589,753,426,407 samples, 0.09%)</title><rect x="1157.1" y="53" width="1.1" height="15.0" fill="rgb(210,27,50)" rx="2" ry="2" />
+<text  x="1160.13" y="63.5" ></text>
+</g>
+<g >
+<title>ifconfig/77 (15,010,251,621,266 samples, 0.85%)</title><rect x="651.6" y="85" width="10.0" height="15.0" fill="rgb(208,153,46)" rx="2" ry="2" />
+<text  x="654.58" y="95.5" ></text>
+</g>
+<g >
+<title>owl/79 (47,462,486,043,177 samples, 2.70%)</title><rect x="1158.2" y="85" width="31.8" height="15.0" fill="rgb(245,80,31)" rx="2" ry="2" />
+<text  x="1161.19" y="95.5" >ow..</text>
+</g>
+<g >
+<title>file:///bin/busybox+0x9c9ea (1,483,490,819,440 samples, 0.08%)</title><rect x="130.9" y="69" width="1.0" height="15.0" fill="rgb(213,226,29)" rx="2" ry="2" />
+<text  x="133.90" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/64=1 (173,467,243,857 samples, 0.01%)</title><rect x="582.6" y="53" width="0.2" height="15.0" fill="rgb(225,144,30)" rx="2" ry="2" />
+<text  x="585.63" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/56=4 (1,504,002,544,986 samples, 0.09%)</title><rect x="870.0" y="53" width="1.0" height="15.0" fill="rgb(215,195,17)" rx="2" ry="2" />
+<text  x="872.98" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/220=77 (2,235,282,689,407 samples, 0.13%)</title><rect x="647.2" y="53" width="1.5" height="15.0" fill="rgb(213,127,53)" rx="2" ry="2" />
+<text  x="650.18" y="63.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,829,918,813 samples, 0.01%)</title><rect x="260.2" y="37" width="0.2" height="15.0" fill="rgb(240,56,28)" rx="2" ry="2" />
+<text  x="263.24" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,055,954,950,404 samples, 0.17%)</title><rect x="793.7" y="53" width="2.0" height="15.0" fill="rgb(221,126,13)" rx="2" ry="2" />
+<text  x="796.67" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,322,166,660,413 samples, 0.19%)</title><rect x="1122.4" y="69" width="2.2" height="15.0" fill="rgb(209,31,28)" rx="2" ry="2" />
+<text  x="1125.37" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,060,871,712,088 samples, 0.17%)</title><rect x="573.3" y="69" width="2.0" height="15.0" fill="rgb(235,33,34)" rx="2" ry="2" />
+<text  x="576.27" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x8ce8 (184,649,820,600 samples, 0.01%)</title><rect x="1188.3" y="69" width="0.2" height="15.0" fill="rgb(224,224,10)" rx="2" ry="2" />
+<text  x="1191.34" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (42,955,571,597,998 samples, 2.44%)</title><rect x="1124.7" y="53" width="28.7" height="15.0" fill="rgb(229,113,52)" rx="2" ry="2" />
+<text  x="1127.65" y="63.5" >ec..</text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x115ae (1,513,340,370,097 samples, 0.09%)</title><rect x="860.5" y="69" width="1.0" height="15.0" fill="rgb(225,209,47)" rx="2" ry="2" />
+<text  x="863.54" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (56,951,451,255,349 samples, 3.23%)</title><rect x="13.4" y="69" width="38.2" height="15.0" fill="rgb(217,76,46)" rx="2" ry="2" />
+<text  x="16.39" y="79.5" >fil..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x8065c (714,950,300,764 samples, 0.04%)</title><rect x="661.6" y="69" width="0.5" height="15.0" fill="rgb(206,158,9)" rx="2" ry="2" />
+<text  x="664.64" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x8ce8 (183,040,844,230 samples, 0.01%)</title><rect x="213.6" y="69" width="0.2" height="15.0" fill="rgb(236,138,18)" rx="2" ry="2" />
+<text  x="216.64" y="79.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,775,353,592 samples, 0.01%)</title><rect x="224.2" y="37" width="0.1" height="15.0" fill="rgb(230,29,41)" rx="2" ry="2" />
+<text  x="227.15" y="47.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,761,878,833 samples, 0.01%)</title><rect x="219.9" y="37" width="0.1" height="15.0" fill="rgb(211,159,19)" rx="2" ry="2" />
+<text  x="222.91" y="47.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (610,291,064,868 samples, 0.03%)</title><rect x="216.7" y="69" width="0.5" height="15.0" fill="rgb(244,103,47)" rx="2" ry="2" />
+<text  x="219.74" y="79.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (163,195,360,360 samples, 0.01%)</title><rect x="519.9" y="37" width="0.1" height="15.0" fill="rgb(229,45,27)" rx="2" ry="2" />
+<text  x="522.87" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/221=0 (81,883,454,988,932 samples, 4.65%)</title><rect x="805.2" y="53" width="54.9" height="15.0" fill="rgb(235,34,28)" rx="2" ry="2" />
+<text  x="808.22" y="63.5" >ecall..</text>
+</g>
+<g >
+<title>ash/78 (82,895,484,591,126 samples, 4.71%)</title><rect x="804.5" y="85" width="55.6" height="15.0" fill="rgb(254,96,22)" rx="2" ry="2" />
+<text  x="807.54" y="95.5" >ash/78</text>
+</g>
+<g >
+<title>ecall/73=1 (3,178,427,820,139 samples, 0.18%)</title><rect x="789.0" y="53" width="2.2" height="15.0" fill="rgb(235,47,38)" rx="2" ry="2" />
+<text  x="792.04" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (42,965,826,446,918 samples, 2.44%)</title><rect x="1124.7" y="69" width="28.7" height="15.0" fill="rgb(241,157,18)" rx="2" ry="2" />
+<text  x="1127.65" y="79.5" >fi..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (61,836,660,070,199 samples, 3.51%)</title><rect x="304.4" y="69" width="41.4" height="15.0" fill="rgb(218,2,39)" rx="2" ry="2" />
+<text  x="307.39" y="79.5" >fil..</text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x8ce0 (1,493,037,244,690 samples, 0.08%)</title><rect x="862.9" y="69" width="1.0" height="15.0" fill="rgb(250,223,37)" rx="2" ry="2" />
+<text  x="865.93" y="79.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,463,359,679,709 samples, 0.08%)</title><rect x="872.8" y="53" width="1.0" height="15.0" fill="rgb(216,122,6)" rx="2" ry="2" />
+<text  x="875.80" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (40,969,811,549,878 samples, 2.33%)</title><rect x="453.8" y="69" width="27.5" height="15.0" fill="rgb(212,198,39)" rx="2" ry="2" />
+<text  x="456.81" y="79.5" >f..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (5,020,428,963,532 samples, 0.29%)</title><rect x="582.8" y="69" width="3.3" height="15.0" fill="rgb(253,172,21)" rx="2" ry="2" />
+<text  x="585.76" y="79.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (163,190,361,253 samples, 0.01%)</title><rect x="518.4" y="37" width="0.1" height="15.0" fill="rgb(212,17,10)" rx="2" ry="2" />
+<text  x="521.42" y="47.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (1,395,829,194,040 samples, 0.08%)</title><rect x="441.4" y="69" width="0.9" height="15.0" fill="rgb(232,60,21)" rx="2" ry="2" />
+<text  x="444.38" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/260=0 (1,391,317,269,488 samples, 0.08%)</title><rect x="69.3" y="53" width="0.9" height="15.0" fill="rgb(240,6,43)" rx="2" ry="2" />
+<text  x="72.28" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/139=73 (680,116,881,812 samples, 0.04%)</title><rect x="12.4" y="53" width="0.5" height="15.0" fill="rgb(227,119,4)" rx="2" ry="2" />
+<text  x="15.43" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (2,801,093,915,309 samples, 0.16%)</title><rect x="377.3" y="53" width="1.9" height="15.0" fill="rgb(221,224,39)" rx="2" ry="2" />
+<text  x="380.31" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,311,912,928,393 samples, 0.19%)</title><rect x="1122.4" y="53" width="2.2" height="15.0" fill="rgb(237,111,29)" rx="2" ry="2" />
+<text  x="1125.37" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x8796 (1,484,651,813,540 samples, 0.08%)</title><rect x="212.6" y="69" width="1.0" height="15.0" fill="rgb(218,33,6)" rx="2" ry="2" />
+<text  x="215.64" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,770,814,598,215 samples, 0.21%)</title><rect x="146.6" y="53" width="2.6" height="15.0" fill="rgb(244,215,10)" rx="2" ry="2" />
+<text  x="149.64" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/139=77 (704,736,715,673 samples, 0.04%)</title><rect x="661.6" y="53" width="0.5" height="15.0" fill="rgb(212,62,17)" rx="2" ry="2" />
+<text  x="664.64" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x11778 (184,658,464,288 samples, 0.01%)</title><rect x="1189.6" y="69" width="0.1" height="15.0" fill="rgb(226,208,2)" rx="2" ry="2" />
+<text  x="1192.56" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x11726 (1,487,911,725,059 samples, 0.08%)</title><rect x="446.8" y="69" width="1.0" height="15.0" fill="rgb(244,174,0)" rx="2" ry="2" />
+<text  x="449.77" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,556,666,204,453 samples, 0.20%)</title><rect x="791.2" y="69" width="2.4" height="15.0" fill="rgb(238,154,19)" rx="2" ry="2" />
+<text  x="794.23" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (65,293,207,585,702 samples, 3.71%)</title><rect x="229.0" y="69" width="43.8" height="15.0" fill="rgb(253,5,41)" rx="2" ry="2" />
+<text  x="232.03" y="79.5" >file..</text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,758,816,161 samples, 0.01%)</title><rect x="219.0" y="37" width="0.1" height="15.0" fill="rgb(219,105,1)" rx="2" ry="2" />
+<text  x="222.01" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (42,304,229,708,459 samples, 2.40%)</title><rect x="379.2" y="53" width="28.4" height="15.0" fill="rgb(235,210,46)" rx="2" ry="2" />
+<text  x="382.25" y="63.5" >ec..</text>
+</g>
+<g >
+<title>ecall/94=17 (2,205,135,726,446 samples, 0.13%)</title><rect x="132.2" y="53" width="1.4" height="15.0" fill="rgb(246,34,47)" rx="2" ry="2" />
+<text  x="135.15" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (2,245,489,641,824 samples, 0.13%)</title><rect x="647.2" y="69" width="1.5" height="15.0" fill="rgb(241,155,3)" rx="2" ry="2" />
+<text  x="650.18" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/139=74 (680,852,690,954 samples, 0.04%)</title><rect x="133.6" y="53" width="0.5" height="15.0" fill="rgb(208,147,41)" rx="2" ry="2" />
+<text  x="136.64" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0xca3c6 (1,493,183,286,685 samples, 0.08%)</title><rect x="864.7" y="69" width="1.0" height="15.0" fill="rgb(236,44,34)" rx="2" ry="2" />
+<text  x="867.69" y="79.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,464,503,594,811 samples, 0.08%)</title><rect x="936.6" y="53" width="1.0" height="15.0" fill="rgb(245,170,34)" rx="2" ry="2" />
+<text  x="939.58" y="63.5" ></text>
+</g>
+<g >
+<title>ash/46 (204,411,950,952,393 samples, 11.61%)</title><rect x="512.9" y="85" width="136.9" height="15.0" fill="rgb(232,27,14)" rx="2" ry="2" />
+<text  x="515.86" y="95.5" >ash/46</text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (163,192,687,360 samples, 0.01%)</title><rect x="519.1" y="37" width="0.2" height="15.0" fill="rgb(244,127,52)" rx="2" ry="2" />
+<text  x="522.15" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,038,928,823,121 samples, 0.17%)</title><rect x="144.5" y="53" width="2.1" height="15.0" fill="rgb(219,174,53)" rx="2" ry="2" />
+<text  x="147.55" y="63.5" ></text>
+</g>
+<g >
+<title>ash/46 (213,243,666,166,272 samples, 12.11%)</title><rect x="661.6" y="85" width="142.9" height="15.0" fill="rgb(253,150,53)" rx="2" ry="2" />
+<text  x="664.64" y="95.5" >ash/46</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (7,886,188,799,037 samples, 0.45%)</title><rect x="134.6" y="69" width="5.3" height="15.0" fill="rgb(243,203,52)" rx="2" ry="2" />
+<text  x="137.60" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0xf10 (81,883,454,988,932 samples, 4.65%)</title><rect x="805.2" y="69" width="54.9" height="15.0" fill="rgb(230,55,1)" rx="2" ry="2" />
+<text  x="808.22" y="79.5" >file:..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (1,405,029,870,773 samples, 0.08%)</title><rect x="1155.5" y="69" width="0.9" height="15.0" fill="rgb(246,110,20)" rx="2" ry="2" />
+<text  x="1158.51" y="79.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (81,602,570,308,134 samples, 4.63%)</title><rect x="73.6" y="53" width="54.7" height="15.0" fill="rgb(209,228,22)" rx="2" ry="2" />
+<text  x="76.57" y="63.5" >inter..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (2,811,279,827,288 samples, 0.16%)</title><rect x="377.3" y="69" width="1.9" height="15.0" fill="rgb(214,153,2)" rx="2" ry="2" />
+<text  x="380.31" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (24,460,864,343,228 samples, 1.39%)</title><rect x="350.0" y="69" width="16.4" height="15.0" fill="rgb(235,188,44)" rx="2" ry="2" />
+<text  x="353.04" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x11778 (1,523,987,298,203 samples, 0.09%)</title><rect x="129.2" y="69" width="1.0" height="15.0" fill="rgb(215,188,15)" rx="2" ry="2" />
+<text  x="132.17" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,197,043,874,954 samples, 0.18%)</title><rect x="1019.4" y="69" width="2.2" height="15.0" fill="rgb(252,43,17)" rx="2" ry="2" />
+<text  x="1022.44" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (2,928,412,119,181 samples, 0.17%)</title><rect x="578.6" y="53" width="2.0" height="15.0" fill="rgb(233,169,2)" rx="2" ry="2" />
+<text  x="581.63" y="63.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,834,498,881 samples, 0.01%)</title><rect x="261.7" y="37" width="0.1" height="15.0" fill="rgb(233,71,4)" rx="2" ry="2" />
+<text  x="264.69" y="47.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (24,830,513,400,800 samples, 1.41%)</title><rect x="1021.6" y="53" width="16.7" height="15.0" fill="rgb(254,67,10)" rx="2" ry="2" />
+<text  x="1024.64" y="63.5" ></text>
+</g>
+<g >
+<title>exception/15 (1,477,576,380,799 samples, 0.08%)</title><rect x="444.3" y="53" width="1.0" height="15.0" fill="rgb(254,109,27)" rx="2" ry="2" />
+<text  x="447.26" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97b8a (1,916,327,255,647 samples, 0.11%)</title><rect x="450.0" y="69" width="1.3" height="15.0" fill="rgb(232,118,52)" rx="2" ry="2" />
+<text  x="453.00" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,178,341,296,635 samples, 0.18%)</title><rect x="786.8" y="53" width="2.2" height="15.0" fill="rgb(211,89,38)" rx="2" ry="2" />
+<text  x="789.85" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (65,283,029,234,236 samples, 3.71%)</title><rect x="229.0" y="53" width="43.8" height="15.0" fill="rgb(241,60,20)" rx="2" ry="2" />
+<text  x="232.03" y="63.5" >ecal..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (92,614,586,539,207 samples, 5.26%)</title><rect x="724.7" y="69" width="62.1" height="15.0" fill="rgb(246,36,20)" rx="2" ry="2" />
+<text  x="727.73" y="79.5" >file:/..</text>
+</g>
+<g >
+<title>interrupt/5 (1,462,501,565,651 samples, 0.08%)</title><rect x="864.7" y="53" width="1.0" height="15.0" fill="rgb(222,135,40)" rx="2" ry="2" />
+<text  x="867.70" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (45,395,788,179,032 samples, 2.58%)</title><rect x="1083.2" y="69" width="30.4" height="15.0" fill="rgb(215,125,51)" rx="2" ry="2" />
+<text  x="1086.18" y="79.5" >fi..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,689,559,239,181 samples, 0.21%)</title><rect x="1038.3" y="69" width="2.5" height="15.0" fill="rgb(238,119,6)" rx="2" ry="2" />
+<text  x="1041.34" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (56,941,298,389,479 samples, 3.23%)</title><rect x="13.4" y="53" width="38.2" height="15.0" fill="rgb(231,107,7)" rx="2" ry="2" />
+<text  x="16.39" y="63.5" >eca..</text>
+</g>
+<g >
+<title>ecall/94=17 (47,081,858,027,906 samples, 2.67%)</title><rect x="481.3" y="53" width="31.6" height="15.0" fill="rgb(234,102,5)" rx="2" ry="2" />
+<text  x="484.31" y="63.5" >ec..</text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0xf10 (1,535,194,303,062 samples, 0.09%)</title><rect x="208.9" y="69" width="1.0" height="15.0" fill="rgb(234,81,22)" rx="2" ry="2" />
+<text  x="211.87" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (61,826,478,276,909 samples, 3.51%)</title><rect x="304.4" y="53" width="41.4" height="15.0" fill="rgb(224,137,38)" rx="2" ry="2" />
+<text  x="307.39" y="63.5" >eca..</text>
+</g>
+<g >
+<title>ecall/260=0 (1,405,029,870,773 samples, 0.08%)</title><rect x="1155.5" y="53" width="0.9" height="15.0" fill="rgb(250,71,29)" rx="2" ry="2" />
+<text  x="1158.51" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,160,716,800,822 samples, 0.18%)</title><rect x="139.9" y="53" width="2.2" height="15.0" fill="rgb(238,109,35)" rx="2" ry="2" />
+<text  x="142.94" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9bbea (1,490,935,592,208 samples, 0.08%)</title><rect x="657.5" y="69" width="1.0" height="15.0" fill="rgb(207,223,53)" rx="2" ry="2" />
+<text  x="660.48" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/220=79 (2,245,920,139,017 samples, 0.13%)</title><rect x="1153.8" y="53" width="1.5" height="15.0" fill="rgb(251,170,21)" rx="2" ry="2" />
+<text  x="1156.77" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,289,787,964,496 samples, 0.19%)</title><rect x="371.4" y="53" width="2.2" height="15.0" fill="rgb(233,192,47)" rx="2" ry="2" />
+<text  x="374.38" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (2,942,472,964,204 samples, 0.17%)</title><rect x="1113.7" y="53" width="1.9" height="15.0" fill="rgb(214,222,50)" rx="2" ry="2" />
+<text  x="1116.66" y="63.5" ></text>
+</g>
+<g >
+<title>ash/46 (319,771,012,375,071 samples, 18.16%)</title><rect x="228.0" y="85" width="214.3" height="15.0" fill="rgb(214,45,11)" rx="2" ry="2" />
+<text  x="231.03" y="95.5" >ash/46</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (4,292,909,882,112 samples, 0.24%)</title><rect x="798.6" y="69" width="2.9" height="15.0" fill="rgb(251,63,19)" rx="2" ry="2" />
+<text  x="801.63" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x5eb00 (1,488,348,635,378 samples, 0.08%)</title><rect x="451.7" y="69" width="0.9" height="15.0" fill="rgb(232,151,20)" rx="2" ry="2" />
+<text  x="454.65" y="79.5" ></text>
+</g>
+<g >
+<title>file:///bin/busybox+0x4d49e (2,309,730,184,028 samples, 0.13%)</title><rect x="226.5" y="69" width="1.5" height="15.0" fill="rgb(248,13,4)" rx="2" ry="2" />
+<text  x="229.48" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (42,314,416,511,710 samples, 2.40%)</title><rect x="379.2" y="69" width="28.4" height="15.0" fill="rgb(217,104,9)" rx="2" ry="2" />
+<text  x="382.25" y="79.5" >fi..</text>
+</g>
+<g >
+<title>ecall/73=1 (2,914,198,010,268 samples, 0.17%)</title><rect x="59.9" y="53" width="2.0" height="15.0" fill="rgb(217,30,31)" rx="2" ry="2" />
+<text  x="62.94" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x8065c (690,267,884,047 samples, 0.04%)</title><rect x="12.4" y="69" width="0.5" height="15.0" fill="rgb(236,65,13)" rx="2" ry="2" />
+<text  x="15.43" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (86,103,208,496,140 samples, 4.89%)</title><rect x="589.1" y="53" width="57.7" height="15.0" fill="rgb(241,68,53)" rx="2" ry="2" />
+<text  x="592.13" y="63.5" >ecall/..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,689,893,733,948 samples, 0.21%)</title><rect x="1046.1" y="69" width="2.5" height="15.0" fill="rgb(211,180,17)" rx="2" ry="2" />
+<text  x="1049.09" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x115d4 (43,759,253,239,063 samples, 2.49%)</title><rect x="1158.7" y="69" width="29.3" height="15.0" fill="rgb(235,77,16)" rx="2" ry="2" />
+<text  x="1161.65" y="79.5" >fi..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,197,708,345,287 samples, 0.18%)</title><rect x="1040.9" y="69" width="2.1" height="15.0" fill="rgb(251,61,5)" rx="2" ry="2" />
+<text  x="1043.87" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/220=78 (766,626,829,175 samples, 0.04%)</title><rect x="801.9" y="53" width="0.5" height="15.0" fill="rgb(216,79,50)" rx="2" ry="2" />
+<text  x="804.87" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,321,992,523,088 samples, 0.19%)</title><rect x="1118.0" y="69" width="2.2" height="15.0" fill="rgb(221,139,41)" rx="2" ry="2" />
+<text  x="1120.97" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98096 (1,514,383,450,931 samples, 0.09%)</title><rect x="871.4" y="69" width="1.0" height="15.0" fill="rgb(230,118,54)" rx="2" ry="2" />
+<text  x="874.38" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0x622a (1,484,505,290,806 samples, 0.08%)</title><rect x="210.1" y="69" width="1.0" height="15.0" fill="rgb(209,12,43)" rx="2" ry="2" />
+<text  x="213.12" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (2,938,615,762,537 samples, 0.17%)</title><rect x="578.6" y="69" width="2.0" height="15.0" fill="rgb(251,13,41)" rx="2" ry="2" />
+<text  x="581.63" y="79.5" ></text>
+</g>
+<g >
+<title>ash/75 (2,541,673,836,115 samples, 0.14%)</title><rect x="208.2" y="85" width="1.7" height="15.0" fill="rgb(214,165,21)" rx="2" ry="2" />
+<text  x="211.19" y="95.5" ></text>
+</g>
+<g >
+<title>exception/15 (1,521,274,702,527 samples, 0.09%)</title><rect x="654.4" y="53" width="1.0" height="15.0" fill="rgb(254,136,53)" rx="2" ry="2" />
+<text  x="657.38" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/116=1185 (1,474,814,382,743 samples, 0.08%)</title><rect x="215.7" y="53" width="1.0" height="15.0" fill="rgb(224,91,9)" rx="2" ry="2" />
+<text  x="218.68" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,767,022,818,253 samples, 0.21%)</title><rect x="57.4" y="53" width="2.5" height="15.0" fill="rgb(249,222,8)" rx="2" ry="2" />
+<text  x="60.36" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/221=0 (1,582,224,483,312 samples, 0.09%)</title><rect x="650.5" y="53" width="1.1" height="15.0" fill="rgb(254,25,49)" rx="2" ry="2" />
+<text  x="653.52" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (5,595,200,980,936 samples, 0.32%)</title><rect x="64.5" y="53" width="3.7" height="15.0" fill="rgb(237,174,23)" rx="2" ry="2" />
+<text  x="67.46" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/94=17 (3,666,557,707,450 samples, 0.21%)</title><rect x="659.2" y="53" width="2.4" height="15.0" fill="rgb(230,156,52)" rx="2" ry="2" />
+<text  x="662.18" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/63=152 (1,504,151,102,962 samples, 0.09%)</title><rect x="871.4" y="53" width="1.0" height="15.0" fill="rgb(220,76,31)" rx="2" ry="2" />
+<text  x="874.38" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/220=75 (82,593,587,524,492 samples, 4.69%)</title><rect x="151.7" y="53" width="55.3" height="15.0" fill="rgb(224,180,10)" rx="2" ry="2" />
+<text  x="154.69" y="63.5" >ecall..</text>
+</g>
+<g >
+<title>ecall/73=1 (2,922,944,217,673 samples, 0.17%)</title><rect x="366.5" y="53" width="1.9" height="15.0" fill="rgb(224,119,0)" rx="2" ry="2" />
+<text  x="369.48" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,679,643,890,846 samples, 0.21%)</title><rect x="1046.1" y="53" width="2.5" height="15.0" fill="rgb(252,124,31)" rx="2" ry="2" />
+<text  x="1049.09" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,460,155,851,839 samples, 0.08%)</title><rect x="656.2" y="53" width="0.9" height="15.0" fill="rgb(240,200,26)" rx="2" ry="2" />
+<text  x="659.17" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (24,450,680,011,251 samples, 1.39%)</title><rect x="350.0" y="53" width="16.4" height="15.0" fill="rgb(246,197,42)" rx="2" ry="2" />
+<text  x="353.04" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/29=0 (1,480,723,681,484 samples, 0.08%)</title><rect x="657.5" y="53" width="1.0" height="15.0" fill="rgb(223,37,43)" rx="2" ry="2" />
+<text  x="660.48" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97ebc (1,514,976,975,002 samples, 0.09%)</title><rect x="929.7" y="69" width="1.0" height="15.0" fill="rgb(205,55,41)" rx="2" ry="2" />
+<text  x="932.66" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (43,636,670,156,777 samples, 2.48%)</title><rect x="1048.6" y="53" width="29.3" height="15.0" fill="rgb(207,10,7)" rx="2" ry="2" />
+<text  x="1051.62" y="63.5" >ec..</text>
+</g>
+<g >
+<title>ash/79 (2,605,087,949,619 samples, 0.15%)</title><rect x="1156.4" y="85" width="1.8" height="15.0" fill="rgb(205,166,18)" rx="2" ry="2" />
+<text  x="1159.45" y="95.5" ></text>
+</g>
+<g >
+<title>ecall/260=0 (1,392,775,555,096 samples, 0.08%)</title><rect x="207.3" y="53" width="0.9" height="15.0" fill="rgb(234,49,6)" rx="2" ry="2" />
+<text  x="210.26" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,526,685,638,948 samples, 0.20%)</title><rect x="142.1" y="53" width="2.4" height="15.0" fill="rgb(237,18,36)" rx="2" ry="2" />
+<text  x="145.12" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (47,268,397,728,810 samples, 2.68%)</title><rect x="407.7" y="69" width="31.6" height="15.0" fill="rgb(228,6,9)" rx="2" ry="2" />
+<text  x="410.66" y="79.5" >fi..</text>
+</g>
+<g >
+<title>ecall/221=0 (1,535,194,303,062 samples, 0.09%)</title><rect x="208.9" y="53" width="1.0" height="15.0" fill="rgb(251,197,29)" rx="2" ry="2" />
+<text  x="211.87" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,645,385,801,287 samples, 0.21%)</title><rect x="62.0" y="53" width="2.4" height="15.0" fill="rgb(242,68,40)" rx="2" ry="2" />
+<text  x="64.96" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (203,477,134,592 samples, 0.01%)</title><rect x="225.7" y="69" width="0.1" height="15.0" fill="rgb(252,141,17)" rx="2" ry="2" />
+<text  x="228.70" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (86,113,414,761,151 samples, 4.89%)</title><rect x="589.1" y="69" width="57.7" height="15.0" fill="rgb(211,224,1)" rx="2" ry="2" />
+<text  x="592.13" y="79.5" >file:/..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (4,982,208,851,239 samples, 0.28%)</title><rect x="1079.8" y="69" width="3.3" height="15.0" fill="rgb(249,38,44)" rx="2" ry="2" />
+<text  x="1082.79" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (114,944,631,068,077 samples, 6.53%)</title><rect x="942.4" y="69" width="77.0" height="15.0" fill="rgb(225,6,4)" rx="2" ry="2" />
+<text  x="945.36" y="79.5" >file:///..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97ebc (82,391,224,095,788 samples, 4.68%)</title><rect x="874.2" y="69" width="55.2" height="15.0" fill="rgb(236,76,35)" rx="2" ry="2" />
+<text  x="877.18" y="79.5" >file:..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (5,009,539,181,125 samples, 0.28%)</title><rect x="345.9" y="69" width="3.3" height="15.0" fill="rgb(248,181,40)" rx="2" ry="2" />
+<text  x="348.89" y="79.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,457,479,745,498 samples, 0.08%)</title><rect x="448.4" y="53" width="1.0" height="15.0" fill="rgb(234,24,26)" rx="2" ry="2" />
+<text  x="451.39" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (45,844,805,737,577 samples, 2.60%)</title><rect x="272.8" y="69" width="30.8" height="15.0" fill="rgb(218,193,3)" rx="2" ry="2" />
+<text  x="275.84" y="79.5" >fi..</text>
+</g>
+<g >
+<title>ecall/73=1 (3,161,068,280,211 samples, 0.18%)</title><rect x="149.2" y="53" width="2.2" height="15.0" fill="rgb(249,82,37)" rx="2" ry="2" />
+<text  x="152.23" y="63.5" ></text>
+</g>
+<g >
+<title>file://'vmlinux'+0xffffffe00107d936 (162,777,672,013 samples, 0.01%)</title><rect x="224.9" y="37" width="0.1" height="15.0" fill="rgb(254,170,28)" rx="2" ry="2" />
+<text  x="227.88" y="47.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x809d4 (1,398,378,690,686 samples, 0.08%)</title><rect x="648.9" y="69" width="0.9" height="15.0" fill="rgb(218,161,20)" rx="2" ry="2" />
+<text  x="651.90" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/226=0 (1,513,827,340,264 samples, 0.09%)</title><rect x="129.2" y="53" width="1.0" height="15.0" fill="rgb(212,185,37)" rx="2" ry="2" />
+<text  x="132.17" y="63.5" ></text>
+</g>
+<g >
+<title>ash/77 (2,592,752,947,894 samples, 0.15%)</title><rect x="649.8" y="85" width="1.8" height="15.0" fill="rgb(225,63,50)" rx="2" ry="2" />
+<text  x="652.84" y="95.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,065,746,014,266 samples, 0.17%)</title><rect x="1120.3" y="53" width="2.0" height="15.0" fill="rgb(221,19,52)" rx="2" ry="2" />
+<text  x="1123.25" y="63.5" ></text>
+</g>
+<g >
+<title>ash/76 (2,588,025,560,617 samples, 0.15%)</title><rect x="442.3" y="85" width="1.8" height="15.0" fill="rgb(210,169,39)" rx="2" ry="2" />
+<text  x="445.32" y="95.5" ></text>
+</g>
+<g >
+<title>ash/74 (1,949,923,331,729 samples, 0.11%)</title><rect x="70.2" y="85" width="1.3" height="15.0" fill="rgb(211,6,24)" rx="2" ry="2" />
+<text  x="73.21" y="95.5" ></text>
+</g>
+<g >
+<title>ps/78 (119,805,460,916,039 samples, 6.80%)</title><rect x="860.1" y="85" width="80.3" height="15.0" fill="rgb(216,28,51)" rx="2" ry="2" />
+<text  x="863.09" y="95.5" >ps/78</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (183,671,229,344 samples, 0.01%)</title><rect x="582.6" y="69" width="0.2" height="15.0" fill="rgb(220,110,44)" rx="2" ry="2" />
+<text  x="585.63" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/221=0 (1,579,339,386,443 samples, 0.09%)</title><rect x="443.0" y="53" width="1.1" height="15.0" fill="rgb(227,90,50)" rx="2" ry="2" />
+<text  x="445.99" y="63.5" ></text>
+</g>
+<g >
+<title>ash/46 (322,433,148,362,066 samples, 18.31%)</title><rect x="940.4" y="85" width="216.0" height="15.0" fill="rgb(220,158,12)" rx="2" ry="2" />
+<text  x="943.38" y="95.5" >ash/46</text>
+</g>
+<g >
+<title>file:///bin/busybox+0x4d49e (47,081,858,027,906 samples, 2.67%)</title><rect x="481.3" y="69" width="31.6" height="15.0" fill="rgb(248,107,37)" rx="2" ry="2" />
+<text  x="484.31" y="79.5" >fi..</text>
+</g>
+<g >
+<title>exception/12 (1,473,329,902,899 samples, 0.08%)</title><rect x="130.9" y="53" width="1.0" height="15.0" fill="rgb(211,190,12)" rx="2" ry="2" />
+<text  x="133.90" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (43,728,480,563,433 samples, 2.48%)</title><rect x="1158.7" y="53" width="29.3" height="15.0" fill="rgb(218,141,49)" rx="2" ry="2" />
+<text  x="1161.67" y="63.5" >in..</text>
+</g>
+<g >
+<title>exception/15 (1,515,308,153,820 samples, 0.09%)</title><rect x="214.2" y="53" width="1.1" height="15.0" fill="rgb(214,223,15)" rx="2" ry="2" />
+<text  x="217.25" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/61=280 (1,503,557,603,720 samples, 0.09%)</title><rect x="866.1" y="53" width="1.0" height="15.0" fill="rgb(211,175,19)" rx="2" ry="2" />
+<text  x="869.09" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/79=0 (1,505,030,909,350 samples, 0.09%)</title><rect x="932.4" y="53" width="1.0" height="15.0" fill="rgb(221,223,2)" rx="2" ry="2" />
+<text  x="935.44" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,462,786,857,830 samples, 0.08%)</title><rect x="867.3" y="53" width="0.9" height="15.0" fill="rgb(232,209,13)" rx="2" ry="2" />
+<text  x="870.26" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/ld-linux-riscv64-lp64d.so.1+0xf10 (1,579,339,386,443 samples, 0.09%)</title><rect x="443.0" y="69" width="1.1" height="15.0" fill="rgb(214,6,24)" rx="2" ry="2" />
+<text  x="445.99" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/64=116 (40,918,827,248,590 samples, 2.32%)</title><rect x="453.8" y="53" width="27.4" height="15.0" fill="rgb(224,56,7)" rx="2" ry="2" />
+<text  x="456.81" y="63.5" >e..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x985e6 (1,515,119,320,862 samples, 0.09%)</title><rect x="931.1" y="69" width="1.0" height="15.0" fill="rgb(209,47,18)" rx="2" ry="2" />
+<text  x="934.08" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x97b0a (1,515,269,249,479 samples, 0.09%)</title><rect x="932.4" y="69" width="1.1" height="15.0" fill="rgb(225,125,43)" rx="2" ry="2" />
+<text  x="935.44" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/221=0 (903,969,976,597 samples, 0.05%)</title><rect x="71.9" y="53" width="0.6" height="15.0" fill="rgb(215,117,26)" rx="2" ry="2" />
+<text  x="74.88" y="63.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (2,696,049,380,913 samples, 0.15%)</title><rect x="1077.9" y="53" width="1.8" height="15.0" fill="rgb(215,174,11)" rx="2" ry="2" />
+<text  x="1080.92" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,170,880,004,362 samples, 0.18%)</title><rect x="139.9" y="69" width="2.2" height="15.0" fill="rgb(235,18,52)" rx="2" ry="2" />
+<text  x="142.94" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (43,646,921,151,526 samples, 2.48%)</title><rect x="1048.6" y="69" width="29.3" height="15.0" fill="rgb(251,101,21)" rx="2" ry="2" />
+<text  x="1051.62" y="79.5" >fi..</text>
+</g>
+<g >
+<title>ecall/73=1 (45,834,626,620,213 samples, 2.60%)</title><rect x="272.8" y="53" width="30.8" height="15.0" fill="rgb(231,77,22)" rx="2" ry="2" />
+<text  x="275.84" y="63.5" >ec..</text>
+</g>
+<g >
+<title>ecall/139=76 (703,687,081,988 samples, 0.04%)</title><rect x="512.9" y="53" width="0.4" height="15.0" fill="rgb(209,198,40)" rx="2" ry="2" />
+<text  x="515.86" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (1,454,001,879,242 samples, 0.08%)</title><rect x="210.1" y="53" width="1.0" height="15.0" fill="rgb(226,162,38)" rx="2" ry="2" />
+<text  x="213.13" y="63.5" ></text>
+</g>
+<g >
+<title>ls/76 (102,677,699,217,498 samples, 5.83%)</title><rect x="444.1" y="85" width="68.8" height="15.0" fill="rgb(217,149,49)" rx="2" ry="2" />
+<text  x="447.05" y="95.5" >ls/76</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (4,224,680,418,395 samples, 0.24%)</title><rect x="586.2" y="69" width="2.9" height="15.0" fill="rgb(245,104,36)" rx="2" ry="2" />
+<text  x="589.24" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (3,311,649,628,693 samples, 0.19%)</title><rect x="1115.7" y="53" width="2.2" height="15.0" fill="rgb(206,13,41)" rx="2" ry="2" />
+<text  x="1118.69" y="63.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (223,827,667,029 samples, 0.01%)</title><rect x="225.9" y="69" width="0.1" height="15.0" fill="rgb(210,131,0)" rx="2" ry="2" />
+<text  x="228.87" y="79.5" ></text>
+</g>
+<g >
+<title>ecall/73=1 (4,417,477,457,706 samples, 0.25%)</title><rect x="1043.1" y="53" width="2.9" height="15.0" fill="rgb(246,3,54)" rx="2" ry="2" />
+<text  x="1046.07" y="63.5" ></text>
+</g>
+<g >
+<title>interrupt/5 (92,594,546,653,344 samples, 5.26%)</title><rect x="662.5" y="53" width="62.1" height="15.0" fill="rgb(213,104,46)" rx="2" ry="2" />
+<text  x="665.55" y="63.5" >interr..</text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x98122 (183,099,910,220 samples, 0.01%)</title><rect x="217.7" y="69" width="0.1" height="15.0" fill="rgb(230,220,21)" rx="2" ry="2" />
+<text  x="220.66" y="79.5" ></text>
+</g>
+<g >
+<title>file:///lib/libc.so.6+0x9ade4 (3,321,902,546,149 samples, 0.19%)</title><rect x="1115.7" y="69" width="2.2" height="15.0" fill="rgb(224,13,14)" rx="2" ry="2" />
+<text  x="1118.69" y="79.5" ></text>
+</g>
+</g>
+</svg>
