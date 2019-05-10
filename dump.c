@@ -770,7 +770,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	unsigned prev_lsb_timestamp = 0;
 	const struct owl_metadata_entry *current_task = &metadata[0];
 	const struct owl_metadata_entry
-		*metadata_end = &metadata[num_meta_entries - 1];
+		*last_metadata = &metadata[num_meta_entries - 1];
 	printfn_t *printfn;
 
 	if (options->outfmt == OUTFMT_FLAME)
@@ -837,7 +837,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	call_frame[2].return_time  = absclocks;
 
 	/* Print first scheduled task */
-	if (current_task <= metadata_end) {
+	if (current_task <= last_metadata) {
 		memcpy(&trace, &tracebuf[0], min(8, tracebuf_size));
 		if (options->outfmt != OUTFMT_FLAME)
 			print_metadata(current_task, trace.timestamp.timestamp,
@@ -872,17 +872,17 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		prev_absclocks = absclocks;
 
 		if (absclocks > next_sched) {
-			if (current_task <= metadata_end) {
-				if (options->outfmt != OUTFMT_FLAME)
+			if (current_task < last_metadata) {
+				current_task++;
+				if (options->outfmt != OUTFMT_FLAME || 1)
 					print_metadata(current_task, next_sched,
 						       '\n');
-				if (current_task < metadata_end) {
-					current_task++;
-					next_sched = current_task->timestamp;
-				} else {
-					/* Assume current_task lives until
+				if (current_task == last_metadata) {
+					/* Assume last task lives until
 					 * trace stops */
 					next_sched = ~0ULL;
+				} else {
+					next_sched = current_task->timestamp;
 				}
 			}
 		}
