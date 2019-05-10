@@ -47,7 +47,46 @@ do {								\
 
 #define STRNCMP_LIT(s, lit) strncmp((s), ""lit"", sizeof((lit)-1))
 
+struct call_frame {
+	union owl_trace enter_trace;  /* Trace entering this frame */
+	union owl_trace return_trace; /* Trace returning to this frame */
+	uint64_t enter_time;
+	uint64_t return_time;
+	/* We could have a task switch ?!?! */
+	const struct owl_metadata_entry *enter_task;
+	const struct owl_metadata_entry *return_task;
+	uint32_t pchi;
+};
+
+struct callstack {
+	struct call_frame *frames;
+	int frameno; /* The 'frame' we're at */
+};
+
+struct print_args {
+	/* Used for timestamp pchi & invalid */
+	union owl_trace trace;
+	uint64_t timestamp;
+
+	/* Current task and memory mapping info */
+	const struct owl_map_info *maps;
+	size_t num_map_entries;
+	const struct owl_metadata_entry *current_task;
+
+	/* Arch settings */
+	unsigned pc_bits;
+	bool sign_extend_pc;
+
+	char delim;
+};
+
+struct map_search_key {
+	int pid;
+	uint64_t pc;
+};
+
 typedef long long unsigned int llu_t;
+typedef void (* const printfn_t)(struct print_args *, struct callstack *);
 
 /* Bytes */
 static size_t
@@ -93,46 +132,6 @@ timestamp_trace_to_clocks(union owl_trace curr, union owl_trace prev,
 
 	return absclocks | currclocks;
 }
-
-struct call_frame {
-	union owl_trace enter_trace;  /* Trace entering this frame */
-	union owl_trace return_trace; /* Trace returning to this frame */
-	uint64_t enter_time;
-	uint64_t return_time;
-	/* We could have a task switch ?!?! */
-	const struct owl_metadata_entry *enter_task;
-	const struct owl_metadata_entry *return_task;
-	uint32_t pchi;
-};
-
-struct callstack {
-	struct call_frame *frames;
-	int frameno; /* The 'frame' we're at */
-};
-
-struct print_args {
-	/* Used for timestamp pchi & invalid */
-	union owl_trace trace;
-	uint64_t timestamp;
-
-	/* Current task and memory mapping info */
-	const struct owl_map_info *maps;
-	size_t num_map_entries;
-	const struct owl_metadata_entry *current_task;
-
-	/* Arch settings */
-	unsigned pc_bits;
-	bool sign_extend_pc;
-
-	char delim;
-};
-
-struct map_search_key {
-	int pid;
-	uint64_t pc;
-};
-
-typedef void (* const printfn_t)(struct print_args *, struct callstack *);
 
 /* Begin print helper functions */
 
