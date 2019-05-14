@@ -47,6 +47,13 @@ do {								\
 
 #define STRNCMP_LIT(s, lit) strncmp((s), ""lit"", sizeof((lit)-1))
 
+/* A preprocessed trace */
+struct dump_trace {
+	uint64_t			timestamp;
+	union owl_trace			trace;
+	const struct owl_metadata_entry	*sched_info;
+};
+
 struct call_frame {
 	union owl_trace enter_trace;  /* Trace entering this frame */
 	union owl_trace return_trace; /* Trace returning to this frame */
@@ -664,21 +671,18 @@ sort_maps(struct owl_map_info *maps, size_t num_map_entries)
 }
 
 static void
-try_find_pchi(const uint8_t *tracebuf, size_t i, size_t tracebuf_size,
+try_find_pchi(const struct dump_trace *traces, size_t i, size_t ntraces,
 	      struct call_frame *frame)
 {
 	union owl_trace trace, from;
 
 	//printf("i=%llu\n", (llu_t) i);
 
-	memcpy(&from, &tracebuf[i], min(8, tracebuf_size - i));
-	for (; i < tracebuf_size; i += owl_trace_size(trace)) {
-		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
+	from = traces[i].trace;
+	for (; i < ntraces; i++) {
+		trace = traces[i].trace;
 
-		/* HACK: We should be able to get the exact size from the
-		   driver.  */
-		if (owl_trace_empty_p(trace))
-			return;
+		assert(!owl_trace_empty_p(trace));
 
 		/* A PCHI trace will be close to the normal return trace.
 		 * Support edge case where a timestamp trace is emitted in
@@ -697,23 +701,20 @@ try_find_pchi(const uint8_t *tracebuf, size_t i, size_t tracebuf_size,
 
 /* TODO: Check options. This isn't needed for the default output format. */
 static void
-try_populate_frame(const uint8_t *tracebuf, size_t i, size_t tracebuf_size,
+try_populate_frame(const struct dump_trace *traces, size_t i, size_t ntraces,
 		   struct call_frame *frame)
 {
 	union owl_trace trace;
-	union owl_trace return_trace = { .kind = OWL_TRACE_KIND_RETURN, 0 };
+	union owl_trace return_trace = { .kind = OWL_TRACE_KIND_RETURN, .ret.pc = ~0 };
 	int rel_frame = 0;
 	bool found = false;
 
-	while (i < tracebuf_size) {
-		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
+	for (;i < ntraces; i++) {
+		trace = traces[i].trace;
 
 		/* HACK: We should be able to get the exact size from the
 		   driver.  */
-		if (owl_trace_empty_p(trace)) {
-			frame->return_trace = return_trace;
-			break;
-		}
+		assert(!owl_trace_empty_p(trace));
 
 		switch (trace.kind) {
 		case OWL_TRACE_KIND_EXCEPTION:
@@ -732,8 +733,6 @@ try_populate_frame(const uint8_t *tracebuf, size_t i, size_t tracebuf_size,
 
 		if (found)
 			break;
-
-		i += owl_trace_size(trace);
 	}
 
 	frame->return_trace = return_trace;
@@ -742,7 +741,7 @@ try_populate_frame(const uint8_t *tracebuf, size_t i, size_t tracebuf_size,
 	/* H/W writes the PCHI trace after the normal
 	 * trace so we need to look forward in the
 	 * buffer to find it. */
-	try_find_pchi(tracebuf, i, tracebuf_size, frame);
+	try_find_pchi(traces, i, ntraces, frame);
 }
 
 struct options {
@@ -750,6 +749,78 @@ struct options {
 	bool verbose;
 	const char *input;
 };
+
+static size_t
+count_traces(const uint8_t *tracebuf, size_t tracebuf_size)
+{
+	union owl_trace trace;
+	size_t n = 0, i = 0;
+
+	while (true) {
+		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
+		if (i >= tracebuf_size || owl_trace_empty_p(trace))
+			break;
+		i += owl_trace_size(trace);
+		n++;
+	}
+	return n;
+}
+
+/* Timestamp and tie each trace to a task */
+static void
+preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
+		  size_t tracebuf_size, size_t n,
+		  const struct owl_metadata_entry *metadata,
+		  size_t metadata_size)
+{
+	size_t i, offs = 0;
+	union owl_trace trace, prev_timestamp = { 0 };
+	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0;
+	uint64_t next_sched = 0ULL;
+	unsigned prev_lsb_timestamp = 0;
+	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
+	const struct owl_metadata_entry *current_task = &metadata[0];
+	const struct owl_metadata_entry
+		*last_metadata = &metadata[num_meta_entries - 1];
+
+	for (i = 0; i < n; i++, offs += owl_trace_size(trace)) {
+		memcpy(&trace, &tracebuf[offs], min(8, tracebuf_size - offs));
+		if (trace.kind == OWL_TRACE_KIND_TIMESTAMP) {
+			msbclocks = timestamp_trace_to_clocks(trace,
+							      prev_timestamp,
+							      msbclocks);
+			/* Only care about the higher bits.
+			 * The lower bits will be in the individual traces. */
+			msbclocks &= ~((1ULL << 18) - 1);
+			prev_timestamp = trace;
+		} else if (trace.kind != OWL_TRACE_KIND_PCHI &&
+			   prev_lsb_timestamp > trace.lsb_timestamp) {
+			/* Timestamp wrapped */
+			msbclocks += (1ULL << 18);
+		}
+		absclocks = msbclocks | trace.lsb_timestamp;
+		prev_lsb_timestamp = trace.lsb_timestamp;
+		assert(absclocks >= prev_absclocks);
+		prev_absclocks = absclocks;
+
+		if (absclocks > next_sched) {
+			if (current_task < last_metadata) {
+				current_task++;
+				if (current_task == last_metadata) {
+					/* Assume last task lives until
+					 * trace stops */
+					next_sched = ~0ULL;
+				} else {
+					next_sched = current_task->timestamp;
+				}
+			}
+		}
+
+		out[i].trace = trace;
+		out[i].timestamp = absclocks;
+		out[i].sched_info = current_task;
+	}
+}
 
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		const struct owl_metadata_entry *metadata, size_t metadata_size,
@@ -759,18 +830,24 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	/* TODO: Add support for nested interrupts */
 
 	size_t i = 0;
-	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int to_frame = 0, from_frame = 0; /* See comment about callstack/frame levels */
-	union owl_trace trace, prev_timestamp = { 0 };
+	union owl_trace trace;
 	struct call_frame call_frame[3] = { 0 };
-	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0;
-	uint64_t next_sched = ~0ULL;
-	unsigned prev_lsb_timestamp = 0;
-	const struct owl_metadata_entry *current_task = &metadata[0];
-	const struct owl_metadata_entry
-		*last_metadata = &metadata[num_meta_entries - 1];
 	printfn_t *printfn;
+	const struct owl_metadata_entry *prev_sched;
+
+	size_t ntraces;
+	ntraces = count_traces(tracebuf, tracebuf_size);
+
+	if (!ntraces)
+		return;
+
+	struct dump_trace *traces;
+	traces = calloc(ntraces, sizeof(*traces));
+
+	preprocess_traces(traces, tracebuf, tracebuf_size, ntraces, metadata, metadata_size);
+	prev_sched = traces[0].sched_info;
 
 	if (options->outfmt == OUTFMT_FLAME)
 		printfn = print_flame_trace;
@@ -786,20 +863,17 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
 
 	/* The first trace should be a timestamp. */
-	memcpy(&trace, &tracebuf[0], min(8, tracebuf_size));
+	trace = traces[0].trace;
 	ERROR_ON(trace.kind != OWL_TRACE_KIND_TIMESTAMP,
 		 "%s", "First trace is not a timestamp!\n");
-	i += owl_trace_size(trace);
-	absclocks = trace.timestamp.timestamp;
+	i++;
 
+	to_frame = 0;
 	/* Walk trace buffer to determine initial recursion level. */
-	for (; i < tracebuf_size; i += owl_trace_size(trace)) {
-		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
+	for (; i < ntraces; i++) {
+		memcpy(&trace, &traces[i].trace, sizeof(trace));
 
-		/* HACK: We should be able to get the exact size from the
-		   driver.  */
-		if (owl_trace_empty_p(trace))
-			break;
+		assert(!owl_trace_empty_p(trace));
 
 		switch (trace.kind) {
 		case OWL_TRACE_KIND_SECALL:
@@ -822,69 +896,42 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	call_frame[0].return_trace.kind = OWL_TRACE_KIND_RETURN;
 	call_frame[1].return_trace.kind = OWL_TRACE_KIND_RETURN;
 	call_frame[2].return_trace.kind = OWL_TRACE_KIND_RETURN;
-	call_frame[0].enter_task = current_task;
-	call_frame[1].enter_task = current_task;
-	call_frame[2].enter_task = current_task;
-	call_frame[0].return_task = current_task;
-	call_frame[1].return_task = current_task;
-	call_frame[2].return_task = current_task;
+	call_frame[0].enter_task = traces[0].sched_info;
+	call_frame[1].enter_task = traces[0].sched_info;
+	call_frame[2].enter_task = traces[0].sched_info;
+	call_frame[0].return_task = traces[0].sched_info;
+	call_frame[1].return_task = traces[0].sched_info;
+	call_frame[2].return_task = traces[0].sched_info;
 	call_frame[0].enter_time = ~0; /* Should never be accessed */
-	call_frame[0].return_time  = absclocks;
-	call_frame[1].enter_time = absclocks;
-	call_frame[1].return_time  = absclocks;
-	call_frame[2].enter_time = absclocks;
-	call_frame[2].return_time  = absclocks;
+	call_frame[0].return_time  = traces[0].timestamp;
+	call_frame[1].enter_time   = traces[0].timestamp;
+	call_frame[1].return_time  = traces[0].timestamp;
+	call_frame[2].enter_time   = traces[0].timestamp;
+	call_frame[2].return_time  = traces[0].timestamp;
 
+	prev_sched = &metadata[0];
 	/* Print first scheduled task */
-	if (current_task <= last_metadata) {
-		memcpy(&trace, &tracebuf[0], min(8, tracebuf_size));
+	if (metadata_size > 0) {
+		trace = traces[0].trace;
 		if (options->outfmt != OUTFMT_FLAME)
-			print_metadata(current_task, trace.timestamp.timestamp,
-				       '\n');
-		next_sched = current_task->timestamp;
+			print_metadata(prev_sched,
+				       trace.timestamp.timestamp, '\n');
 	}
 
-	for (i = 0; i < tracebuf_size; i += owl_trace_size(trace)) {
-		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
+	for (i = 0; i < ntraces; i++) {
+		trace =  traces[i].trace;
 
-		/* HACK: We should be able to get the exact size from the
-		   driver. */
-		if (owl_trace_empty_p(trace))
-			break;
+		assert(!owl_trace_empty_p(trace));
 
-		if (trace.kind == OWL_TRACE_KIND_TIMESTAMP) {
-			msbclocks = timestamp_trace_to_clocks(trace,
-							      prev_timestamp,
-							      msbclocks);
-			/* Only care about the higher bits.
-			 * The lower bits will be in the individual traces. */
-			msbclocks &= ~((1ULL << 18) - 1);
-			prev_timestamp = trace;
-		} else if (trace.kind != OWL_TRACE_KIND_PCHI &&
-			   prev_lsb_timestamp > trace.lsb_timestamp) {
-			/* Timestamp wrapped */
-			msbclocks += (1ULL << 18);
-		}
-		absclocks = msbclocks | trace.lsb_timestamp;
-		prev_lsb_timestamp = trace.lsb_timestamp;
-		assert(absclocks >= prev_absclocks);
-		prev_absclocks = absclocks;
-
-		if (absclocks > next_sched) {
-			if (current_task < last_metadata) {
-				current_task++;
-				if (options->outfmt != OUTFMT_FLAME || 1)
-					print_metadata(current_task, next_sched,
-						       '\n');
-				if (current_task == last_metadata) {
-					/* Assume last task lives until
-					 * trace stops */
-					next_sched = ~0ULL;
-				} else {
-					next_sched = current_task->timestamp;
-				}
+		if (prev_sched != traces[i].sched_info) {
+			assert(traces[i].sched_info != NULL);
+			if (options->outfmt != OUTFMT_FLAME || 1) {
+				print_metadata(traces[i].sched_info,
+					       prev_sched->timestamp,
+					       '\n');
 			}
 		}
+		prev_sched = traces[i].sched_info;
 
 		from_frame = to_frame;
 		if (trace.kind != OWL_TRACE_KIND_TIMESTAMP &&
@@ -900,18 +947,18 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				/* H/W writes the PCHI trace after the normal
 				 * trace so we need to look forward in the
 				 * buffer to find it. */
-				try_find_pchi(tracebuf, i, tracebuf_size,
+				try_find_pchi(traces, i, ntraces,
 					      &call_frame[to_frame]);
 				call_frame[to_frame].return_trace = trace;
-				call_frame[to_frame].return_time = absclocks;
-				call_frame[to_frame].return_task = current_task;
+				call_frame[to_frame].return_time = traces[i].timestamp;
+				call_frame[to_frame].return_task = traces[i].sched_info;
 			} else {
 				/* Flame output need the complete frame info */
-				try_populate_frame(tracebuf, i, tracebuf_size,
+				try_populate_frame(traces, i, ntraces,
 						   &call_frame[from_frame]);
 				to_frame++;
-				call_frame[to_frame].enter_task = current_task;
-				call_frame[to_frame].enter_time = absclocks;
+				call_frame[to_frame].enter_time = traces[i].timestamp;
+				call_frame[to_frame].enter_task = traces[i].sched_info;
 				call_frame[to_frame].enter_trace = trace;
 			}
 		}
@@ -921,10 +968,10 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		{
 			struct print_args args = {
 				.trace			= trace,
-				.timestamp		= absclocks,
+				.timestamp		= traces[i].timestamp,
 				.maps			= maps,
 				.num_map_entries	= num_map_entries,
-				.current_task		= current_task,
+				.current_task		= traces[i].sched_info,
 				.pc_bits		= 39,
 				.sign_extend_pc		= true,
 				.delim			= '\n'
@@ -936,6 +983,8 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			printfn[trace.kind](&args, &callstack);
 		}
 	}
+
+	free(traces);
 }
 
 int map_file(const char *path, const void **ptr, size_t *size)
