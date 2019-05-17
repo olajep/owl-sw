@@ -47,21 +47,18 @@ do {								\
 
 #define STRNCMP_LIT(s, lit) strncmp((s), ""lit"", sizeof((lit)-1))
 
-/* A preprocessed trace */
+/* A preprocessed trace with context */
 struct dump_trace {
 	uint64_t			timestamp;
 	union owl_trace			trace;
 	const struct owl_metadata_entry	*sched_info;
+	const struct owl_task		*task;
+	/* struct callstack ??? */
 };
 
 struct call_frame {
-	union owl_trace enter_trace;  /* Trace entering this frame */
-	union owl_trace return_trace; /* Trace returning to this frame */
-	uint64_t enter_time;
-	uint64_t return_time;
-	/* We could have a task switch ?!?! */
-	const struct owl_metadata_entry *enter_task;
-	const struct owl_metadata_entry *return_task;
+	const struct dump_trace *enter_trace;  /* Trace entering this frame */
+	const struct dump_trace *return_trace; /* Trace returning to this frame */
 	uint32_t pchi;
 };
 
@@ -766,6 +763,107 @@ count_traces(const uint8_t *tracebuf, size_t tracebuf_size)
 	return n;
 }
 
+static bool
+sched_eq_p(const struct owl_metadata_entry *a,
+	   const struct owl_metadata_entry *b)
+{
+	if (a->pid != b->pid)
+		return false;
+	if (a->ppid != b->ppid)
+		return false;
+	if (strncmp(a->comm, b->comm, OWL_TASK_COMM_LEN))
+		return false;
+	return true;
+}
+
+/* count unique number of tasks in trace
+ * TODO: We assume that there is no pid reuse during the time we're sampling */
+static size_t
+unique_tasks(const struct owl_metadata_entry *metadata, size_t metadata_size)
+{
+	size_t i, j, n = 0;
+	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
+	bool *counted, done = false;
+
+	/* Track already counted entires */
+	counted = calloc(num_meta_entries, sizeof(*metadata));
+
+	/* Simple O^2 search */
+	for (i = 0; i < num_meta_entries && !done; i++) {
+		if (counted[i])
+			continue;
+
+		done = true;
+
+		/* mark the duplicates */
+		for (j = i + 1; j < num_meta_entries; j++) {
+			if (counted[j])
+				continue;
+
+			if (sched_eq_p(&metadata[i], &metadata[j]))
+				counted[j] = true;
+			else
+				done = false; /* at least one more unique */
+		}
+		n++;
+	}
+
+	free(counted);
+	return n;
+}
+
+static void
+copy_task(struct owl_task *task, const struct owl_metadata_entry *metadata)
+{
+	/* TODO: *task = metadata->task; */
+	task->cpu	= metadata->cpu;
+	task->has_mm	= metadata->has_mm;
+	task->in_execve	= metadata->in_execve;
+	task->kthread	= metadata->kthread;
+	task->pid	= metadata->pid;
+	task->ppid	= metadata->ppid;
+	memcpy(&task->comm, &metadata->comm, OWL_TASK_COMM_LEN);
+}
+
+static void
+create_tasks(struct owl_task *tasks, size_t ntasks,
+	     const struct owl_metadata_entry *metadata, size_t metadata_size)
+{
+	size_t i, j, n = 0;
+	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
+	bool *counted, done = false;
+
+	/* Track already counted entires */
+	counted = calloc(num_meta_entries, sizeof(*metadata));
+
+	/* Simple O^2 search */
+	for (i = 0; i < num_meta_entries && !done; i++) {
+		if (counted[i])
+			continue;
+
+		copy_task(&tasks[n], &metadata[i]);
+
+		counted[i] = true;
+		done = true;
+
+		/* mark the duplicates */
+		for (j = i + 1; j < num_meta_entries; j++) {
+			if (counted[j])
+				continue;
+
+			if (sched_eq_p(&metadata[i], &metadata[j]))
+				counted[j] = true;
+			else
+				done = false; /* at least one more unique */
+		}
+
+		n++;
+	}
+	free(counted);
+
+	assert(n == ntasks);
+}
+
 /* Timestamp and tie each trace to a task */
 static void
 preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
@@ -836,18 +934,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	struct call_frame call_frame[3] = { 0 };
 	printfn_t *printfn;
 	const struct owl_metadata_entry *prev_sched;
-
-	size_t ntraces;
-	ntraces = count_traces(tracebuf, tracebuf_size);
-
-	if (!ntraces)
-		return;
-
+	size_t ntraces, ntasks;
 	struct dump_trace *traces;
-	traces = calloc(ntraces, sizeof(*traces));
-
-	preprocess_traces(traces, tracebuf, tracebuf_size, ntraces, metadata, metadata_size);
-	prev_sched = traces[0].sched_info;
+	struct owl_task *tasks;
 
 	if (options->outfmt == OUTFMT_FLAME)
 		printfn = print_flame_trace;
@@ -856,6 +945,22 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	else
 		printfn = default_print_trace;
 
+	/* Count number of traces */
+	ntraces = count_traces(tracebuf, tracebuf_size);
+	/* Count number of unique tasks */
+	ntasks = unique_tasks(metadata, metadata_size);
+	if (!ntraces || !ntasks)
+		return;
+	traces = calloc(ntraces, sizeof(*traces));
+	tasks = calloc(ntasks, sizeof(*tasks));
+	assert(tasks!= NULL);
+
+	preprocess_traces(traces, tracebuf, tracebuf_size, ntraces,
+			  metadata, metadata_size);
+	prev_sched = traces[0].sched_info;
+
+	create_tasks(tasks, ntasks, metadata, metadata_size);
+
 	/* Sort the map info so we can binary search it */
 	sort_maps(maps, num_map_entries);
 
@@ -863,15 +968,12 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
 
 	/* The first trace should be a timestamp. */
-	trace = traces[0].trace;
-	ERROR_ON(trace.kind != OWL_TRACE_KIND_TIMESTAMP,
+	ERROR_ON(traces[0].trace.kind != OWL_TRACE_KIND_TIMESTAMP,
 		 "%s", "First trace is not a timestamp!\n");
-	i++;
-
 	to_frame = 0;
 	/* Walk trace buffer to determine initial recursion level. */
-	for (; i < ntraces; i++) {
-		memcpy(&trace, &traces[i].trace, sizeof(trace));
+	for (i = 0; i < ntraces; i++) {
+		trace = traces[i].trace;
 
 		assert(!owl_trace_empty_p(trace));
 
@@ -985,6 +1087,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	}
 
 	free(traces);
+	free(tasks);
 }
 
 int map_file(const char *path, const void **ptr, size_t *size)
