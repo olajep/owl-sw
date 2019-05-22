@@ -73,13 +73,13 @@ class callstack_printer:
     for field in self.val.type.fields():
       key = field.name
       val = self.val[key]
-      if key == "frameno" or key == "frameno": continue
-      elif key == "frames":
-        if not val: yield key, "NULL"
-        else:
-          yield key + "[0]", (val+0).dereference()
-          yield key + "[1]", (val+1).dereference()
-          yield key + "[2]", (val+2).dereference()
+      if key == "frameno": continue
+#      elif key == "frames":
+#        if not val: yield key, "NULL"
+#        else:
+#          yield key + "[0]", (val+0).dereference()
+#          yield key + "[1]", (val+1).dereference()
+#          yield key + "[2]", (val+2).dereference()
       else:
         yield key, val
 
