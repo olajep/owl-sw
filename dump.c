@@ -234,8 +234,8 @@ const char *
 binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 	    uint64_t *offset)
 {
-	const struct owl_metadata_entry *task =
-		this_frame(c)->return_trace->sched_info;
+	const struct owl_task *task =
+		&this_frame(c)->return_trace->sched_info->task;
 	*pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
 	*offset = *pc;
 
@@ -659,10 +659,11 @@ static printfn_t real_print_flame_trace[8] = {
 void
 print_metadata(const struct owl_metadata_entry *entry, uint64_t timestamp, char delim)
 {
-	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
+	const struct owl_task *task = &entry->task;
+	assert(task->comm[OWL_TASK_COMM_LEN - 1] == '\0');
 	printf("@=[%020llu] sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]%c",
-	       (llu_t) timestamp, entry->comm, entry->pid,
-	       (llu_t) entry->timestamp, (int) entry->cpu, delim);
+	       (llu_t) timestamp, task->comm, task->pid,
+	       (llu_t) entry->timestamp, (int) task->cpu, delim);
 }
 
 int find_compare_maps(const void *_key, const void *_elem)
@@ -821,21 +822,8 @@ count_traces(const uint8_t *tracebuf, size_t tracebuf_size)
 }
 
 static bool
-sched_eq_p(const struct owl_metadata_entry *a,
-	   const struct owl_metadata_entry *b)
-{
-	if (a->pid != b->pid)
-		return false;
-	if (a->ppid != b->ppid)
-		return false;
-	if (strncmp(a->comm, b->comm, OWL_TASK_COMM_LEN))
-		return false;
-	return true;
-}
-
-static bool
-sched_task_eq_p(const struct owl_metadata_entry *a,
-		const struct owl_task *b)
+task_eq_p(const struct owl_task *a,
+	  const struct owl_task *b)
 {
 	if (a->pid != b->pid)
 		return false;
@@ -870,7 +858,7 @@ unique_tasks(const struct owl_metadata_entry *metadata, size_t metadata_size)
 			if (counted[j])
 				continue;
 
-			if (sched_eq_p(&metadata[i], &metadata[j]))
+			if (task_eq_p(&metadata[i].task, &metadata[j].task))
 				counted[j] = true;
 			else
 				done = false; /* at least one more unique */
@@ -880,19 +868,6 @@ unique_tasks(const struct owl_metadata_entry *metadata, size_t metadata_size)
 
 	free(counted);
 	return n;
-}
-
-static void
-copy_task(struct owl_task *task, const struct owl_metadata_entry *metadata)
-{
-	/* TODO: *task = metadata->task; */
-	task->cpu	= metadata->cpu;
-	task->has_mm	= metadata->has_mm;
-	task->in_execve	= metadata->in_execve;
-	task->kthread	= metadata->kthread;
-	task->pid	= metadata->pid;
-	task->ppid	= metadata->ppid;
-	memcpy(&task->comm, &metadata->comm, OWL_TASK_COMM_LEN);
 }
 
 static void
@@ -911,7 +886,7 @@ create_tasks(struct owl_task *tasks, size_t ntasks,
 		if (counted[i])
 			continue;
 
-		copy_task(&tasks[n], &metadata[i]);
+		tasks[n] = metadata[i].task;
 
 		counted[i] = true;
 		done = true;
@@ -921,7 +896,7 @@ create_tasks(struct owl_task *tasks, size_t ntasks,
 			if (counted[j])
 				continue;
 
-			if (sched_eq_p(&metadata[i], &metadata[j]))
+			if (task_eq_p(&metadata[i].task, &metadata[j].task))
 				counted[j] = true;
 			else
 				done = false; /* at least one more unique */
@@ -1043,7 +1018,7 @@ find_callstack(const struct owl_metadata_entry *sched_info,
 	size_t i;
 	struct callstack *callstack;
 	for (i = 0; i < ntasks; i++) {
-		if (sched_task_eq_p(sched_info, callstacks[i].task)) {
+		if (task_eq_p(&sched_info->task, callstacks[i].task)) {
 			callstack = &callstacks[i];
 			break;
 		}
