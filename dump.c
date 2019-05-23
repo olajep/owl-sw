@@ -24,6 +24,7 @@
 #endif
 #include "owl-user.h"
 #include "syscalltable.h"
+#include "mcalltable.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define max(x,y) (x > y ? x : y)
@@ -380,7 +381,12 @@ describe_frame_enter(struct call_frame *frame, const char **type,
 		break;
 	case OWL_TRACE_KIND_SECALL:
 		*type = "mcall";
-		*name = NULL;
+		*cause = frame->enter_trace->trace.ecall.regval;
+		if (*cause >= ARRAY_SIZE(mcalltable)) {
+			*name = NULL;
+		} else {
+			*name = mcalltable[*cause];
+		}
 		*cause = frame->enter_trace->trace.ecall.regval;
 		break;
 	case OWL_TRACE_KIND_EXCEPTION:
@@ -1126,7 +1132,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	prev_sched = &metadata[0];
 	current_callstack = find_callstack(prev_sched, callstacks, ntasks);
 	/* Print first scheduled task */
-	if (options->outfmt != OUTFMT_FLAME || 1)
+	if (options->outfmt != OUTFMT_FLAME)
 		print_metadata(prev_sched,
 			       traces[0].trace.timestamp.timestamp, '\n');
 
@@ -1145,7 +1151,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			current_callstack->frames[2].task_switch = true;
 #endif
 			assert(traces[i].sched_info != NULL);
-			if (options->outfmt != OUTFMT_FLAME || 1) {
+			if (options->outfmt != OUTFMT_FLAME) {
 				print_metadata(traces[i].sched_info,
 					       prev_sched->timestamp,
 					       '\n');

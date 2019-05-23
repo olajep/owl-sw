@@ -16,7 +16,7 @@ all: $(TARGETS)
 dump.o owl.o: owl.h
 
 dump: dump.o
-dump.o: syscalltable.h
+dump.o: syscalltable.h mcalltable.h
 
 syscalltable.h: syscalltable-gen.h
 GENERATED = syscalltable-gen.h
