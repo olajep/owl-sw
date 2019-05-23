@@ -260,10 +260,8 @@ binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 		 * seems fragile. We might have to add timestamping to the
 		 * mmaping metadata to detect whether the region is alive at
 		 * this point in time. */
-		if (task->in_execve)
-			key.pid = task->ppid;
 		map = find_map(&key, a->maps, a->num_map_entries);
-		if (!map && !task->has_mm) {
+		if (!map) {
 			key.pid = task->ppid;
 			map = find_map(&key, a->maps, a->num_map_entries);
 		}
