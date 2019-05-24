@@ -925,6 +925,7 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		*last_metadata = &metadata[num_meta_entries - 1];
 	bool task_switch;
 
+	next_sched = sched_info->timestamp;
 	for (i = 0; i < n; i++, offs += owl_trace_size(trace)) {
 		memcpy(&trace, &tracebuf[offs], min(8, tracebuf_size - offs));
 		if (trace.kind == OWL_TRACE_KIND_TIMESTAMP) {
