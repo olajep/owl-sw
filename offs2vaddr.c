@@ -27,7 +27,7 @@ elf_p(const void *ptr)
 
 void usage_and_die(char **argv)
 {
-	fprintf(stderr, "usage: %s FILE OFFSET", argv[0]);
+	fprintf(stderr, "usage: %s FILE OFFSET\n", argv[0]);
 	exit(EXIT_FAILURE);
 }
 
