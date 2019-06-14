@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -29,8 +30,12 @@ enum command {
 struct options {
 	enum command cmd;
 	char *path;
+	bool ignore_illegal_insn;
 };
-#define INIT_OPTIONS { .cmd = CMD_NR_COMMANDS, .path = "/dev/tracectrl0" }
+#define INIT_OPTIONS { \
+	.cmd = CMD_NR_COMMANDS, \
+	.path = "/dev/tracectrl0", \
+	.ignore_illegal_insn = true } /* TODO: This should be configurable */
 
 struct state {
 	int fd;
@@ -67,9 +72,22 @@ parse_cmdline(int argc, char *argv[], struct options *options)
 }
 
 static int
+do_config(struct options *options, struct state *state)
+{
+	struct owl_config config = { 0 };
+
+	config.ignore_illegal_insn = options->ignore_illegal_insn;
+	return ioctl(state->fd, OWL_IOCTL_CONFIG, &config);
+}
+
+static int
 do_start(struct options *options, struct state *state)
 {
-	(void)options;
+	int err;
+
+	err = do_config(options, state);
+	if (err)
+		return err;
 
 	return ioctl(state->fd, OWL_IOCTL_ENABLE);
 }
