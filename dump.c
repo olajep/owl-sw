@@ -947,7 +947,6 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 	const struct owl_metadata_entry *sched_info = &metadata[0];
 	const struct owl_metadata_entry
 		*last_metadata = &metadata[num_meta_entries - 1];
-	bool task_switch;
 
 	next_sched = sched_info->timestamp;
 	for (i = 0; i < n; i++, offs += owl_trace_size(trace)) {
@@ -970,17 +969,14 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		assert(absclocks >= prev_absclocks);
 		prev_absclocks = absclocks;
 
-		task_switch = absclocks > next_sched;
-		if (task_switch) {
-			if (sched_info < last_metadata) {
-				sched_info++;
-				if (sched_info == last_metadata) {
-					/* Assume last task lives until
-					 * trace stops */
-					next_sched = ~0ULL;
-				} else {
-					next_sched = sched_info->timestamp;
-				}
+		while (absclocks > next_sched && sched_info < last_metadata) {
+			sched_info++;
+			if (sched_info == last_metadata) {
+				/* Assume last task lives until
+				 * trace stops */
+				next_sched = ~0ULL;
+			} else {
+				next_sched = sched_info->timestamp;
 			}
 		}
 
