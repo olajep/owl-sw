@@ -1042,7 +1042,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 
 	size_t i = 0;
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
-	int to_frame, from_frame = 0; /* See comment about callstack/frame levels */
+	int to_frame = 0, from_frame; /* See comment about callstack/frame levels */
 	printfn_t *printfn;
 	const struct owl_metadata_entry *prev_sched;
 	size_t ntraces, npchitraces, ntasks;
@@ -1089,20 +1089,19 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		 "%s", "First trace is not a timestamp!\n");
 
 	/* Walk trace buffer to determine initial recursion level. */
-	from_frame = 1;
 	for (i = 0; i < ntraces; i++) {
 		switch (traces[i].trace.kind) {
 		case OWL_TRACE_KIND_SECALL:
 		case OWL_TRACE_KIND_EXCEPTION:
 		case OWL_TRACE_KIND_UECALL:
-			to_frame++;
-			continue;
-		case OWL_TRACE_KIND_RETURN:
 			to_frame--;
-		default: continue;
+			break;
+		case OWL_TRACE_KIND_RETURN:
+			to_frame++;
+		default: break;
 		}
 	}
-	to_frame = from_frame;
+	from_frame = to_frame;
 
 	prev_sched = traces[0].sched_info;
 	curr_callstack = find_callstack(prev_sched, callstacks, ntasks);
