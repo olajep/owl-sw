@@ -53,7 +53,7 @@ do {								\
 struct dump_trace {
 	uint64_t			timestamp;
 	union owl_trace			trace;
-	const struct owl_metadata_entry	*sched_info;
+	const struct owl_sched_info	*sched_info;
 };
 
 struct call_frame {
@@ -226,7 +226,7 @@ const char *
 binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 	    uint64_t *offset)
 {
-	const struct owl_metadata_entry *sched =
+	const struct owl_sched_info *sched =
 		this_frame(c)->return_trace->sched_info;
 	*pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
 	*offset = *pc;
@@ -249,7 +249,7 @@ binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 
 		/* Detecting when we should use the parent's memory mapping
 		 * seems fragile. We might have to add timestamping to the
-		 * mmaping metadata to detect whether the region is alive at
+		 * mmaping sched_info to detect whether the region is alive at
 		 * this point in time. */
 		map = find_map(&key, a->maps, a->num_map_entries);
 		if (!map && sched->in_execve) {
@@ -631,7 +631,8 @@ static printfn_t real_print_flame_trace[8] = {
 /* End FlameChart friendly output format */
 
 void
-print_metadata(const struct owl_metadata_entry *entry, uint64_t timestamp, char delim)
+print_sched_info(const struct owl_sched_info *entry, uint64_t timestamp,
+		 char delim)
 {
 	const struct owl_task *task = &entry->task;
 	assert(task->comm[OWL_TASK_COMM_LEN - 1] == '\0');
@@ -858,14 +859,14 @@ task_eq_p(const struct owl_task *a,
 /* count unique number of tasks in trace
  * TODO: We assume that there is no pid reuse during the time we're sampling */
 static size_t
-unique_tasks(const struct owl_metadata_entry *metadata, size_t metadata_size)
+unique_tasks(const struct owl_sched_info *sched_info, size_t sched_info_size)
 {
 	size_t i, j, n = 0;
-	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
+	const size_t num_meta_entries = sched_info_size / sizeof(*sched_info);
 	bool *counted, done = false;
 
 	/* Track already counted entires */
-	counted = calloc(num_meta_entries, sizeof(*metadata));
+	counted = calloc(num_meta_entries, sizeof(*sched_info));
 
 	/* Simple O^2 search */
 	for (i = 0; i < num_meta_entries && !done; i++) {
@@ -879,7 +880,7 @@ unique_tasks(const struct owl_metadata_entry *metadata, size_t metadata_size)
 			if (counted[j])
 				continue;
 
-			if (task_eq_p(&metadata[i].task, &metadata[j].task))
+			if (task_eq_p(&sched_info[i].task, &sched_info[j].task))
 				counted[j] = true;
 			else
 				done = false; /* at least one more unique */
@@ -893,21 +894,21 @@ unique_tasks(const struct owl_metadata_entry *metadata, size_t metadata_size)
 
 static void
 create_tasks(struct owl_task *tasks, size_t ntasks,
-	     const struct owl_metadata_entry *metadata, size_t metadata_size)
+	     const struct owl_sched_info *sched_info, size_t sched_info_size)
 {
 	size_t i, j, n = 0;
-	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
+	const size_t num_meta_entries = sched_info_size / sizeof(*sched_info);
 	bool *counted, done = false;
 
 	/* Track already counted entires */
-	counted = calloc(num_meta_entries, sizeof(*metadata));
+	counted = calloc(num_meta_entries, sizeof(*sched_info));
 
 	/* Simple O^2 search */
 	for (i = 0; i < num_meta_entries && !done; i++) {
 		if (counted[i])
 			continue;
 
-		tasks[n] = metadata[i].task;
+		tasks[n] = sched_info[i].task;
 
 		counted[i] = true;
 		done = true;
@@ -917,7 +918,7 @@ create_tasks(struct owl_task *tasks, size_t ntasks,
 			if (counted[j])
 				continue;
 
-			if (task_eq_p(&metadata[i].task, &metadata[j].task))
+			if (task_eq_p(&sched_info[i].task, &sched_info[j].task))
 				counted[j] = true;
 			else
 				done = false; /* at least one more unique */
@@ -934,8 +935,8 @@ create_tasks(struct owl_task *tasks, size_t ntasks,
 static void
 preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		  size_t tracebuf_size, size_t n,
-		  const struct owl_metadata_entry *metadata,
-		  size_t metadata_size,
+		  const struct owl_sched_info *sched_info,
+		  size_t sched_info_size,
 		  struct dump_trace **pchi_traces)
 {
 	size_t i, offs = 0;
@@ -943,12 +944,12 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0;
 	uint64_t next_sched = 0ULL;
 	unsigned prev_lsb_timestamp = 0;
-	const size_t num_meta_entries = metadata_size / sizeof(*metadata);
-	const struct owl_metadata_entry *sched_info = &metadata[0];
-	const struct owl_metadata_entry
-		*last_metadata = &metadata[num_meta_entries - 1];
+	const size_t num_meta_entries = sched_info_size / sizeof(*sched_info);
+	const struct owl_sched_info *curr_sched = &sched_info[0];
+	const struct owl_sched_info
+		*last_sched = &sched_info[num_meta_entries - 1];
 
-	next_sched = sched_info->timestamp;
+	next_sched = curr_sched->timestamp;
 	for (i = 0; i < n; i++, offs += owl_trace_size(trace)) {
 		memcpy(&trace, &tracebuf[offs], min(8, tracebuf_size - offs));
 		if (trace.kind == OWL_TRACE_KIND_TIMESTAMP) {
@@ -969,20 +970,20 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		assert(absclocks >= prev_absclocks);
 		prev_absclocks = absclocks;
 
-		while (absclocks > next_sched && sched_info < last_metadata) {
-			sched_info++;
-			if (sched_info == last_metadata) {
+		while (absclocks > next_sched && curr_sched < last_sched) {
+			curr_sched++;
+			if (curr_sched == last_sched) {
 				/* Assume last task lives until
 				 * trace stops */
 				next_sched = ~0ULL;
 			} else {
-				next_sched = sched_info->timestamp;
+				next_sched = curr_sched->timestamp;
 			}
 		}
 
 		out[i].trace = trace;
 		out[i].timestamp = absclocks;
-		out[i].sched_info = sched_info;
+		out[i].sched_info = curr_sched;
 		if (trace.kind == OWL_TRACE_KIND_PCHI)
 			*pchi_traces++ = &out[i];
 	}
@@ -1017,7 +1018,7 @@ init_callstacks(struct callstack *callstacks, struct owl_task *tasks,
 }
 
 static struct callstack *
-find_callstack(const struct owl_metadata_entry *sched_info,
+find_callstack(const struct owl_sched_info *sched_info,
 	       struct callstack *callstacks, size_t ntasks)
 {
 	size_t i;
@@ -1034,7 +1035,7 @@ find_callstack(const struct owl_metadata_entry *sched_info,
 }
 
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
-		const struct owl_metadata_entry *metadata, size_t metadata_size,
+		const struct owl_sched_info *sched_info, size_t sched_info_size,
 		struct owl_map_info *maps, size_t map_info_size,
 		struct options *options)
 {
@@ -1044,7 +1045,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int to_frame = 0, from_frame; /* See comment about callstack/frame levels */
 	printfn_t *printfn;
-	const struct owl_metadata_entry *prev_sched;
+	const struct owl_sched_info *prev_sched;
 	size_t ntraces, npchitraces, ntasks;
 	struct dump_trace *traces, **pchi_traces;
 	struct owl_task *tasks;
@@ -1061,7 +1062,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	/* Count number of traces */
 	count_traces(tracebuf, tracebuf_size, &ntraces, &npchitraces);
 	/* Count number of unique tasks */
-	ntasks = unique_tasks(metadata, metadata_size);
+	ntasks = unique_tasks(sched_info, sched_info_size);
 	if (!ntraces || !ntasks)
 		return;
 	traces = calloc(ntraces, sizeof(*traces));
@@ -1072,9 +1073,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	       pchi_traces != NULL);
 
 	preprocess_traces(traces, tracebuf, tracebuf_size, ntraces,
-			  metadata, metadata_size, pchi_traces);
+			  sched_info, sched_info_size, pchi_traces);
 
-	create_tasks(tasks, ntasks, metadata, metadata_size);
+	create_tasks(tasks, ntasks, sched_info, sched_info_size);
 
 	init_callstacks(callstacks, tasks, ntasks);
 
@@ -1107,7 +1108,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	curr_callstack = find_callstack(prev_sched, callstacks, ntasks);
 	/* Print first scheduled task */
 	if (options->outfmt != OUTFMT_FLAME)
-		print_metadata(prev_sched,
+		print_sched_info(prev_sched,
 			       traces[0].trace.timestamp.timestamp, '\n');
 
 	for (i = 0; i < ntraces; i++) {
@@ -1119,7 +1120,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 					       ntasks);
 			assert(traces[i].sched_info != NULL);
 			if (options->outfmt != OUTFMT_FLAME) {
-				print_metadata(traces[i].sched_info,
+				print_sched_info(traces[i].sched_info,
 					       prev_sched->timestamp,
 					       '\n');
 			}
@@ -1284,12 +1285,12 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 int
 main(int argc, char *argv[])
 {
-	const uint8_t *buf, *tracebuf;
+	const uint8_t *buf, *tracebuf, *payload;
 	const struct owl_trace_file_header *file_header;
-	const struct owl_metadata_entry *metadata;
+	const struct owl_sched_info *sched_info;
 	struct owl_map_info *map_info;
 	int fd;
-	size_t buf_size, tracebuf_size, metadata_size, map_info_size;
+	size_t buf_size, tracebuf_size, sched_info_size, map_info_size;
 	struct options options = { 0 };
 
 	/* Disable line buffering */
@@ -1307,20 +1308,25 @@ main(int argc, char *argv[])
 
 	file_header = (const struct owl_trace_file_header *) buf;
 	if (file_header->magic != OWL_TRACE_FILE_HEADER_MAGIC) {
-		fprintf(stderr, "invalid trace\n");
+		fprintf(stderr, "Wrong file header magic\n");
+		exit(EXIT_FAILURE);
+	}
+	if (file_header->sentinel != OWL_TRACE_FILE_HEADER_SENTINEL) {
+		fprintf(stderr, "Wrong file header sentinel\n");
 		exit(EXIT_FAILURE);
 	}
 
-	tracebuf = (const uint8_t *) &file_header[1];
+	payload = (const uint8_t *) &file_header[1];
+	tracebuf = payload + file_header->tracebuf_offs;
 	tracebuf_size = file_header->tracebuf_size;
-	metadata =
-		(const struct owl_metadata_entry *) (tracebuf + tracebuf_size);
-	metadata_size = file_header->metadata_size;
+	sched_info = (const struct owl_sched_info *)
+		     (payload + file_header->sched_info_offs);
+	sched_info_size = file_header->sched_info_size;
 	map_info = (struct owl_map_info *)
-		(((uintptr_t) metadata) + metadata_size);
+		   (payload + file_header->map_info_offs);
 	map_info_size = file_header->map_info_size;
 	dump_trace(tracebuf, tracebuf_size,
-		   metadata, metadata_size,
+		   sched_info, sched_info_size,
 		   map_info, map_info_size,
 		   &options);
 
