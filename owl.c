@@ -19,6 +19,8 @@
 #endif
 #include "owl-user.h"
 
+#define max(x,y) (x > y ? x : y)
+
 enum command {
 	CMD_START,
 	CMD_STOP,
@@ -106,6 +108,7 @@ do_dump(struct options *options, struct state *state)
 	(void)options;
 
 	int ret = 0;
+	uint64_t offs;
 	struct owl_status status = { 0 };
 	struct owl_trace_header header = { 0 };
 	struct owl_trace_file_header file_header = { 0 };
@@ -113,18 +116,25 @@ do_dump(struct options *options, struct state *state)
 	ret = ioctl(state->fd, OWL_IOCTL_STATUS, &status);
 	if (ret) {
 		perror("status");
-		return 1;
+		return ret;
 	}
 
 	header.max_tracebuf_size = status.tracebuf_size;
 	header.max_sched_info_size = status.sched_info_size;
 	header.max_map_info_size = status.map_info_size;
+	header.max_stream_info_size = status.stream_info_size;
 
+	header.streaminfobuf = calloc(1, header.max_stream_info_size);
+	if (!header.streaminfobuf) {
+		perror("calloc");
+		ret = 1;
+		goto out;
+	}
 	header.tracebuf = calloc(1, header.max_tracebuf_size);
 	if (!header.tracebuf) {
 		perror("calloc");
 		ret = 2;
-		goto out;
+		goto free_streaminfobuf;
 	}
 	header.schedinfobuf = calloc(1, header.max_sched_info_size);
 	if (!header.schedinfobuf) {
@@ -135,7 +145,7 @@ do_dump(struct options *options, struct state *state)
 	header.mapinfobuf = calloc(1, header.max_map_info_size);
 	if (!header.mapinfobuf) {
 		perror("calloc");
-		ret = 3;
+		ret = 4;
 		goto free_schedinfobuf;
 	}
 
@@ -147,11 +157,25 @@ do_dump(struct options *options, struct state *state)
 
 	file_header.magic		= OWL_TRACE_FILE_HEADER_MAGIC;
 	file_header.trace_format	= header.trace_format;
+	file_header.num_cpus		= max(1,
+					      header.stream_info_size /
+					      sizeof(struct owl_stream_info));
+	file_header.stream_info_size	= header.stream_info_size;
 	file_header.tracebuf_size	= header.tracebuf_size;
 	file_header.sched_info_size	= header.sched_info_size;
 	file_header.map_info_size	= header.map_info_size;
+	offs = 0;
+	file_header.stream_info_offs	= offs;
+	offs += header.stream_info_size;
+	file_header.tracebuf_offs	= offs;
+	offs += header.tracebuf_size;
+	file_header.sched_info_offs	= offs;
+	offs += header.sched_info_size;
+	file_header.map_info_offs	= offs;
+	file_header.sentinel		= OWL_TRACE_FILE_HEADER_SENTINEL;
 
 	fwrite(&file_header, sizeof(file_header), 1, stdout);
+	fwrite(header.streaminfobuf, header.stream_info_size, 1, stdout);
 	fwrite(header.tracebuf, header.tracebuf_size, 1, stdout);
 	fwrite(header.schedinfobuf, header.sched_info_size, 1, stdout);
 	fwrite(header.mapinfobuf, header.map_info_size, 1, stdout);
@@ -162,6 +186,8 @@ free_schedinfobuf:
 	free(header.schedinfobuf);
 free_tracebuf:
 	free(header.tracebuf);
+free_streaminfobuf:
+	free(header.schedinfobuf);
 out:
 	return ret;
 }
