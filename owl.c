@@ -117,7 +117,7 @@ do_dump(struct options *options, struct state *state)
 	}
 
 	header.max_tracebuf_size = status.tracebuf_size;
-	header.max_metadata_size = status.metadata_size;
+	header.max_sched_info_size = status.sched_info_size;
 	header.max_map_info_size = status.map_info_size;
 
 	header.tracebuf = calloc(1, header.max_tracebuf_size);
@@ -126,8 +126,8 @@ do_dump(struct options *options, struct state *state)
 		ret = 2;
 		goto out;
 	}
-	header.metadatabuf = calloc(1, header.max_metadata_size);
-	if (!header.metadatabuf) {
+	header.schedinfobuf = calloc(1, header.max_sched_info_size);
+	if (!header.schedinfobuf) {
 		perror("calloc");
 		ret = 3;
 		goto free_tracebuf;
@@ -136,7 +136,7 @@ do_dump(struct options *options, struct state *state)
 	if (!header.mapinfobuf) {
 		perror("calloc");
 		ret = 3;
-		goto free_metadatabuf;
+		goto free_schedinfobuf;
 	}
 
 	ret = ioctl(state->fd, OWL_IOCTL_DUMP, &header);
@@ -147,20 +147,19 @@ do_dump(struct options *options, struct state *state)
 
 	file_header.magic		= OWL_TRACE_FILE_HEADER_MAGIC;
 	file_header.trace_format	= header.trace_format;
-	file_header.metadata_format	= header.metadata_format;
 	file_header.tracebuf_size	= header.tracebuf_size;
-	file_header.metadata_size	= header.metadata_size;
+	file_header.sched_info_size	= header.sched_info_size;
 	file_header.map_info_size	= header.map_info_size;
 
 	fwrite(&file_header, sizeof(file_header), 1, stdout);
 	fwrite(header.tracebuf, header.tracebuf_size, 1, stdout);
-	fwrite(header.metadatabuf, header.metadata_size, 1, stdout);
+	fwrite(header.schedinfobuf, header.sched_info_size, 1, stdout);
 	fwrite(header.mapinfobuf, header.map_info_size, 1, stdout);
 
 free_mapinfobuf:
 	free(header.mapinfobuf);
-free_metadatabuf:
-	free(header.metadatabuf);
+free_schedinfobuf:
+	free(header.schedinfobuf);
 free_tracebuf:
 	free(header.tracebuf);
 out:
