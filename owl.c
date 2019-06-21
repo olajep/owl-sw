@@ -187,7 +187,7 @@ free_schedinfobuf:
 free_tracebuf:
 	free(header.tracebuf);
 free_streaminfobuf:
-	free(header.schedinfobuf);
+	free(header.streaminfobuf);
 out:
 	return ret;
 }
