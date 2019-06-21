@@ -16,7 +16,7 @@ struct owl_trace_file_header {
 	uint64_t magic;
 	uint32_t trace_format;
 	uint16_t num_cpus;
-	uint64_t:48; /* reserved */
+	unsigned:16; /* reserved */
 	uint64_t stream_info_size;
 	uint64_t stream_info_offs;
 	uint64_t tracebuf_size;
