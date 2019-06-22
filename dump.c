@@ -1282,12 +1282,43 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 		print_usage_and_die(argc, argv, EXIT_FAILURE);
 }
 
+void print_file_header(const struct owl_trace_file_header *fh)
+{
+	printf("FILE HEADER\n");
+	printf("magic:\t\t\t%lx\n", fh->magic);
+	printf("trace_format:\t\t%u\n", fh->trace_format);
+	printf("num_cpus:\t\t%u\n", fh->num_cpus);
+	printf("stream_info_size:\t%lu\n", fh->stream_info_size);
+	printf("stream_info_offs:\t%lu\n", fh->stream_info_offs);
+	printf("tracebuf_size:\t\t%lu\n", fh->tracebuf_size);
+	printf("tracebuf_offs:\t\t%lu\n", fh->tracebuf_offs);
+	printf("sched_info_size:\t%lu\n", fh->sched_info_size);
+	printf("sched_info_offs:\t%lu\n", fh->sched_info_offs);
+	printf("map_info_size:\t\t%lu\n", fh->map_info_size);
+	printf("map_info_offs:\t\t%lu\n", fh->map_info_offs);
+	printf("sentinel:\t\t%lx\n", fh->sentinel);
+	printf("==================================================\n");
+}
+
+void print_stream_info(const struct owl_stream_info *si, uint64_t size)
+{
+	printf("TRACE STREAMS\n");
+	while (si && size) {
+		printf("cpu:\t\t\t%u\n", si->cpu);
+		printf("offs:\t\t\t%llu\n", si->offs);
+		printf("size:\t\t\t%llu\n", si->size);
+		size -= min(size, sizeof(*si));
+	}
+	printf("==================================================\n");
+}
+
 int
 main(int argc, char *argv[])
 {
 	const uint8_t *buf, *tracebuf, *payload;
 	const struct owl_trace_file_header *file_header;
 	const struct owl_sched_info *sched_info;
+	const struct owl_stream_info *stream_info;
 	struct owl_map_info *map_info;
 	int fd;
 	size_t buf_size, tracebuf_size, sched_info_size, map_info_size;
@@ -1315,8 +1346,15 @@ main(int argc, char *argv[])
 		fprintf(stderr, "Wrong file header sentinel\n");
 		exit(EXIT_FAILURE);
 	}
+	if (file_header->num_cpus != 1) {
+		fprintf(stderr,
+			"TODO: We only support one cpu trace stream, but the dump has %u streams\n",
+			file_header->num_cpus);
+	}
 
 	payload = (const uint8_t *) &file_header[1];
+	stream_info = (const struct owl_stream_info *)
+		      (payload + file_header->stream_info_offs);
 	tracebuf = payload + file_header->tracebuf_offs;
 	tracebuf_size = file_header->tracebuf_size;
 	sched_info = (const struct owl_sched_info *)
@@ -1325,6 +1363,12 @@ main(int argc, char *argv[])
 	map_info = (struct owl_map_info *)
 		   (payload + file_header->map_info_offs);
 	map_info_size = file_header->map_info_size;
+
+	if (options.verbose && options.outfmt != OUTFMT_FLAME) {
+		print_file_header(file_header);
+		print_stream_info(stream_info, file_header->stream_info_size);
+	}
+
 	dump_trace(tracebuf, tracebuf_size,
 		   sched_info, sched_info_size,
 		   map_info, map_info_size,
