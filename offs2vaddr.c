@@ -117,7 +117,7 @@ main(int argc, char *argv[])
 		usage_and_die(argv);
 	}
 
-	printf("%lx\n", addr);
+	printf("0x%lx\n", addr);
 
 	munmap((void *) file, size);
 	close(fd);
