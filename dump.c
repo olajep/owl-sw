@@ -1038,29 +1038,49 @@ int
 compute_initial_frame_level(struct dump_trace *traces, size_t ntraces)
 {
 	int curr_frame, min_frame, max_frame;
+	int transitions, direction, first_direction, adjust;
+	unsigned kind;
 	size_t i;
 
-	curr_frame = max_frame = min_frame = 0;
+	curr_frame = max_frame = min_frame = transitions = first_direction = 0;
 
-	/* Walk trace buffer to determine initial recursion level. */
+	/* Walk trace buffer to determine relative recursion level. */
 	for (i = 0; i < ntraces; i++) {
-		switch (traces[i].trace.kind) {
+		kind = traces[i].trace.kind;
+		switch (kind) {
 		case OWL_TRACE_KIND_SECALL:
 		case OWL_TRACE_KIND_EXCEPTION:
 		case OWL_TRACE_KIND_UECALL:
-			curr_frame++;
-			break;
 		case OWL_TRACE_KIND_RETURN:
-			curr_frame--;
-		default: break;
+			direction = kind == OWL_TRACE_KIND_RETURN ? -1 : 1;
+			curr_frame += direction;
+			if (transitions == 0)
+				first_direction = direction;
+			transitions++;
 		}
 		max_frame = max(curr_frame, max_frame);
 		min_frame = min(curr_frame, min_frame);
 	}
+
+	/* Ensure that absolute frame number can never be negative */
 	if (min_frame < 0) {
 		curr_frame  -= min_frame;
 		min_frame  -= min_frame;
-		max_frame  -= max_frame;
+		max_frame  -= min_frame;
+	}
+
+	/* Ensure first transition will be legal */
+	if (curr_frame <= 0 && first_direction < 0) {
+		adjust = -curr_frame + 1;
+		curr_frame += adjust;
+		min_frame  += adjust;
+		max_frame  += adjust;
+	}
+	if (curr_frame >= 3 && first_direction > 0) {
+		adjust = -curr_frame + 2;
+		curr_frame += adjust;
+		min_frame  += adjust;
+		max_frame  += adjust;
 	}
 	assert(0 <= min_frame && max_frame < 3);
 	assert(0 <= curr_frame && curr_frame < 3);
