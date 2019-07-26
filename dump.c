@@ -1037,55 +1037,41 @@ find_callstack(const struct owl_sched_info *sched_info,
 int
 compute_initial_frame_level(struct dump_trace *traces, size_t ntraces)
 {
-	int curr_frame, min_frame, max_frame;
-	int transitions, direction, first_direction, adjust;
+	int curr_frame, start_frame, direction;
+	int guesses[] = { 1, 0, 2 }; /* Optimize for common case */
 	unsigned kind;
-	size_t i;
+	bool valid;
+	size_t g, i;
 
-	curr_frame = max_frame = min_frame = transitions = first_direction = 0;
-
-	/* Walk trace buffer to determine relative recursion level. */
-	for (i = 0; i < ntraces; i++) {
-		kind = traces[i].trace.kind;
-		switch (kind) {
-		case OWL_TRACE_KIND_SECALL:
-		case OWL_TRACE_KIND_EXCEPTION:
-		case OWL_TRACE_KIND_UECALL:
-		case OWL_TRACE_KIND_RETURN:
+	/* Brute force walk trace buffer until we find a valid solution. */
+	for (g = 0; g < ARRAY_SIZE(guesses); g++) {
+		valid = true;
+		start_frame = guesses[g];
+		curr_frame = start_frame;
+		for (i = 0; i < ntraces; i++) {
+			kind = traces[i].trace.kind;
+			switch (kind) {
+			case OWL_TRACE_KIND_SECALL:
+			case OWL_TRACE_KIND_EXCEPTION:
+			case OWL_TRACE_KIND_UECALL:
+			case OWL_TRACE_KIND_RETURN:
+				break;
+			default: continue;
+			}
 			direction = kind == OWL_TRACE_KIND_RETURN ? -1 : 1;
 			curr_frame += direction;
-			if (transitions == 0)
-				first_direction = direction;
-			transitions++;
+			if (curr_frame < 0 || 3 <= curr_frame) {
+				valid = false;
+				break;
+			}
 		}
-		max_frame = max(curr_frame, max_frame);
-		min_frame = min(curr_frame, min_frame);
+		if (valid)
+			break;
 	}
 
-	/* Ensure that absolute frame number can never be negative */
-	if (min_frame < 0) {
-		curr_frame  -= min_frame;
-		min_frame  -= min_frame;
-		max_frame  -= min_frame;
-	}
+	assert(valid);
 
-	/* Ensure first transition will be legal */
-	if (curr_frame <= 0 && first_direction < 0) {
-		adjust = -curr_frame + 1;
-		curr_frame += adjust;
-		min_frame  += adjust;
-		max_frame  += adjust;
-	}
-	if (curr_frame >= 3 && first_direction > 0) {
-		adjust = -curr_frame + 2;
-		curr_frame += adjust;
-		min_frame  += adjust;
-		max_frame  += adjust;
-	}
-	assert(0 <= min_frame && max_frame < 3);
-	assert(0 <= curr_frame && curr_frame < 3);
-
-	return curr_frame;
+	return valid ? start_frame : -1;
 }
 
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
