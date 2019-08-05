@@ -98,7 +98,8 @@ owl_trace_size(union owl_trace trace)
 	return (trace.kind & 1) ? 8 : 4;
 }
 
-/* HACK: We should be able to pull exact trace size from hardware */
+/* TODO: Remove me when we have verified that the bufptr logic works in
+ * H/W and the Linux device driver. */
 static bool
 owl_trace_empty_p(union owl_trace trace)
 {
@@ -786,8 +787,6 @@ populate_frame(const struct dump_trace *traces, size_t ntraces, size_t i,
 	for (;i < ntraces; i++) {
 		trace = traces[i].trace;
 
-		/* HACK: We should be able to get the exact size from the
-		   driver.  */
 		assert(!owl_trace_empty_p(trace));
 
 		switch (trace.kind) {
@@ -832,9 +831,17 @@ count_traces(const uint8_t *tracebuf, size_t tracebuf_size,
 
 	while (true) {
 		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
-		if (i >= tracebuf_size || owl_trace_empty_p(trace))
+		if (i >= tracebuf_size)
 			break;
+		assert(!owl_trace_empty_p(trace));
 		i += owl_trace_size(trace);
+		if (i > tracebuf_size) {
+			/* Edge case: H/W packs data in 64-bit chunks before
+			 * written to memory. It is thus possible that the last
+			 * emitted trace could be chopped in half and is
+			 * incomplete. If so, ignore it. */
+			break;
+		}
 		n++;
 		if (trace.kind == OWL_TRACE_KIND_PCHI)
 			npchi++;
