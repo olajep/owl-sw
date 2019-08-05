@@ -1154,6 +1154,18 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 					       ntasks);
 			assert(traces[i].sched_info != NULL);
 			if (options->outfmt != OUTFMT_FLAME) {
+				/*
+				 * Print scheduled tasks that didn't generate
+				 * traces.
+				 * TODO: This should be done for FLAME too.
+				 */
+				prev_sched++;
+				while (prev_sched != traces[i].sched_info) {
+					print_sched_info(prev_sched,
+							 prev_sched->timestamp,
+							 '\n');
+					prev_sched++;
+				}
 				print_sched_info(traces[i].sched_info,
 					       prev_sched->timestamp,
 					       '\n');
@@ -1207,6 +1219,21 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 
 		if (traces[i].trace.kind == OWL_TRACE_KIND_RETURN)
 			curr_callstack->frames[from_frame].enter_trace = NULL;
+	}
+
+	/*
+	 * Print all scheduling events that occured after H/W tracing
+	 * was disabled.
+	 * TODO: This should be done for FLAME too.
+	 */
+	if (options->outfmt != OUTFMT_FLAME) {
+		const struct owl_sched_info *end_sched =
+			&sched_info[sched_info_size / sizeof(*sched_info)];
+		while (++prev_sched < end_sched) {
+			print_sched_info(prev_sched,
+					 prev_sched->timestamp,
+					 '\n');
+		}
 	}
 
 	free(traces);
