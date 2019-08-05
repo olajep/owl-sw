@@ -1256,7 +1256,7 @@ int map_file(const char *path, const void **ptr, size_t *size)
 	if (err < 0)
 		return err;
 
-	mem = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
+	mem = mmap(NULL, sb.st_size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
 	if (mem == MAP_FAILED)
 		return -1;
 
