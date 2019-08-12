@@ -632,11 +632,15 @@ static printfn_t real_print_flame_trace[8] = {
 /* End FlameChart friendly output format */
 
 void
-print_sched_info(const struct owl_sched_info *entry, uint64_t timestamp,
-		 char delim)
+filtered_print_sched_info(const struct owl_sched_info *entry,
+			  uint64_t timestamp, int cpu, char delim)
 {
 	const struct owl_task *task = &entry->task;
 	assert(task->comm[OWL_TASK_COMM_LEN - 1] == '\0');
+
+	if (entry->cpu != cpu)
+		return;
+
 	printf("@=[%020llu] sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]%c",
 	       (llu_t) timestamp, task->comm, task->pid,
 	       (llu_t) entry->timestamp, (int) entry->cpu, delim);
@@ -820,6 +824,7 @@ struct options {
 	enum { OUTFMT_NORMAL, OUTFMT_FLAME } outfmt;
 	bool verbose;
 	const char *input;
+	int cpu;
 };
 
 static void
@@ -944,7 +949,8 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		  size_t tracebuf_size, size_t n,
 		  const struct owl_sched_info *sched_info,
 		  size_t sched_info_size,
-		  struct dump_trace **pchi_traces)
+		  struct dump_trace **pchi_traces,
+		  int cpu)
 {
 	size_t i, offs = 0;
 	union owl_trace trace, prev_timestamp = { 0 };
@@ -955,6 +961,11 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 	const struct owl_sched_info *curr_sched = &sched_info[0];
 	const struct owl_sched_info
 		*last_sched = &sched_info[num_meta_entries - 1];
+
+	/* Scheduling info is in one conescutive stream so we need to
+	 * filter out the events that belong to this cpu */
+	while (curr_sched->cpu != cpu && curr_sched != last_sched)
+		curr_sched++;
 
 	next_sched = curr_sched->timestamp;
 	for (i = 0; i < n; i++, offs += owl_trace_size(trace)) {
@@ -978,12 +989,16 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		prev_absclocks = absclocks;
 
 		while (absclocks > next_sched && curr_sched < last_sched) {
-			curr_sched++;
-			if (curr_sched == last_sched) {
+			const struct owl_sched_info *tmp = curr_sched;
+			do {
+				tmp++;
+			} while (tmp->cpu != cpu && tmp != last_sched);
+			if (tmp == last_sched) {
 				/* Assume last task lives until
 				 * trace stops */
 				next_sched = ~0ULL;
 			} else {
+				curr_sched = tmp;
 				next_sched = curr_sched->timestamp;
 			}
 		}
@@ -1086,7 +1101,6 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		struct owl_map_info *maps, size_t map_info_size,
 		struct options *options)
 {
-	/* TODO: Add support for nested interrupts */
 
 	size_t i = 0;
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
@@ -1098,6 +1112,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	struct owl_task *tasks;
 	struct callstack *callstacks, *curr_callstack;
 	uint32_t pchi[3] = { 0 };
+	const int cpu = options->cpu;
 
 	if (options->outfmt == OUTFMT_FLAME)
 		printfn = print_flame_trace;
@@ -1120,7 +1135,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	       pchi_traces != NULL);
 
 	preprocess_traces(traces, tracebuf, tracebuf_size, ntraces,
-			  sched_info, sched_info_size, pchi_traces);
+			  sched_info, sched_info_size, pchi_traces, cpu);
 
 	create_tasks(tasks, ntasks, sched_info, sched_info_size);
 
@@ -1142,8 +1157,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	curr_callstack = find_callstack(prev_sched, callstacks, ntasks);
 	/* Print first scheduled task */
 	if (options->outfmt != OUTFMT_FLAME)
-		print_sched_info(prev_sched,
-			       traces[0].trace.timestamp.timestamp, '\n');
+		filtered_print_sched_info(prev_sched,
+					  traces[0].trace.timestamp.timestamp,
+					  cpu, '\n');
 
 	for (i = 0; i < ntraces; i++) {
 		bool task_switch = prev_sched != traces[i].sched_info;
@@ -1161,14 +1177,15 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				 */
 				prev_sched++;
 				while (prev_sched != traces[i].sched_info) {
-					print_sched_info(prev_sched,
-							 prev_sched->timestamp,
-							 '\n');
+					filtered_print_sched_info(
+						prev_sched,
+						prev_sched->timestamp,
+						cpu, '\n');
 					prev_sched++;
 				}
-				print_sched_info(traces[i].sched_info,
-					       prev_sched->timestamp,
-					       '\n');
+				filtered_print_sched_info(traces[i].sched_info,
+							  prev_sched->timestamp,
+							  cpu, '\n');
 			}
 		}
 		prev_sched = traces[i].sched_info;
@@ -1230,9 +1247,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		const struct owl_sched_info *end_sched =
 			&sched_info[sched_info_size / sizeof(*sched_info)];
 		while (++prev_sched < end_sched) {
-			print_sched_info(prev_sched,
-					 prev_sched->timestamp,
-					 '\n');
+			filtered_print_sched_info(prev_sched,
+						  prev_sched->timestamp,
+						  cpu, '\n');
 		}
 	}
 
@@ -1295,11 +1312,13 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 		static struct option long_options[] = {
 			{"verbose", no_argument,       NULL,  'v' },
 			{"format",  required_argument, NULL,  'f' },
+			{"cpu",     required_argument, NULL,  'c' },
 			{"help",    no_argument,       NULL,  'h' },
 			{0,         0,                 NULL,  0   }
 		};
 
-		c = getopt_long(argc, argv, "vf:h", long_options, &option_index);
+		c = getopt_long(argc, argv, "vf:c:h", long_options,
+				&option_index);
 		if (c == -1)
 			break;
 
@@ -1317,6 +1336,9 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 					break;
 				}
 				print_usage_and_die(argc, argv, EXIT_FAILURE);
+				break;
+			case 'c':
+				options->cpu = (int) strtol(optarg, NULL, 0);
 				break;
 			case 'h':
 				print_usage_and_die(argc, argv, EXIT_SUCCESS);
@@ -1369,6 +1391,7 @@ void print_stream_info(const struct owl_stream_info *si, uint64_t size)
 		printf("offs:\t\t\t%llu\n", si->offs);
 		printf("size:\t\t\t%llu\n", si->size);
 		size -= min(size, sizeof(*si));
+		si++;
 	}
 	printf("==================================================\n");
 }
@@ -1407,11 +1430,6 @@ main(int argc, char *argv[])
 		fprintf(stderr, "Wrong file header sentinel\n");
 		exit(EXIT_FAILURE);
 	}
-	if (file_header->num_cpus != 1) {
-		fprintf(stderr,
-			"TODO: We only support one cpu trace stream, but the dump has %u streams\n",
-			file_header->num_cpus);
-	}
 
 	payload = (const uint8_t *) &file_header[1];
 	stream_info = (const struct owl_stream_info *)
@@ -1430,10 +1448,15 @@ main(int argc, char *argv[])
 		print_stream_info(stream_info, file_header->stream_info_size);
 	}
 
-	dump_trace(tracebuf, tracebuf_size,
-		   sched_info, sched_info_size,
-		   map_info, map_info_size,
-		   &options);
+	{
+		(void)tracebuf_size;
+		const struct owl_stream_info
+			*cpu_si = &stream_info[options.cpu];
+		dump_trace(&tracebuf[cpu_si->offs], cpu_si->size,
+			   sched_info, sched_info_size,
+			   map_info, map_info_size,
+			   &options);
+	}
 
 	munmap((void *) buf, buf_size);
 	close(fd);
