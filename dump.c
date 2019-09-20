@@ -1430,6 +1430,10 @@ main(int argc, char *argv[])
 		fprintf(stderr, "Wrong file header sentinel\n");
 		exit(EXIT_FAILURE);
 	}
+	if (options.cpu >= file_header->num_cpus) {
+		fprintf(stderr, "cpu not in trace\n");
+		exit(EXIT_FAILURE);
+	}
 
 	payload = (const uint8_t *) &file_header[1];
 	stream_info = (const struct owl_stream_info *)
