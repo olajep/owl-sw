@@ -1056,14 +1056,17 @@ find_callstack(const struct owl_sched_info *sched_info,
 	return callstack;
 }
 
-int
-compute_initial_frame_level(struct dump_trace *traces, size_t ntraces)
+static int
+__compute_initial_frame_level(struct dump_trace *traces, size_t ntraces)
 {
 	int curr_frame, start_frame, direction;
 	int guesses[] = { 1, 0, 2 }; /* Optimize for common case */
-	unsigned kind;
 	bool valid;
+	unsigned kind;
 	size_t g, i;
+
+	if (!ntraces)
+		return 0;
 
 	/* Brute force walk trace buffer until we find a valid solution. */
 	for (g = 0; g < ARRAY_SIZE(guesses); g++) {
@@ -1090,10 +1093,41 @@ compute_initial_frame_level(struct dump_trace *traces, size_t ntraces)
 		if (valid)
 			break;
 	}
-
-	assert(valid);
-
 	return valid ? start_frame : -1;
+}
+
+static int
+compute_initial_frame_level(struct dump_trace *traces, size_t *ntraces)
+{
+	int start_frame = 0;
+	size_t m, l, r;
+
+	/* Binary search for valid sequence */
+	l = 0;
+	r = *ntraces;
+	while (l != r) {
+		m = (l + r + 1) / 2;
+		start_frame = __compute_initial_frame_level(traces, m);
+		if (start_frame < 0)
+			r = m - 1;
+		else
+			l = m;
+	}
+	while (m && start_frame < 0) {
+		m--;
+		start_frame = __compute_initial_frame_level(traces, m);
+	}
+	if (m == 0)
+		start_frame = 0;
+	if (m != *ntraces) {
+		fprintf(stderr,
+			"%s: WARNING: Trace broken after %lu traces. Total traces: %lu\n",
+			__func__, m, *ntraces);
+	}
+	*ntraces = m;
+
+	assert(start_frame >= 0);
+	return start_frame;
 }
 
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
@@ -1151,7 +1185,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	ERROR_ON(traces[0].trace.kind != OWL_TRACE_KIND_TIMESTAMP,
 		 "%s", "First trace is not a timestamp!\n");
 
-	to_frame = compute_initial_frame_level(traces, ntraces);
+	to_frame = compute_initial_frame_level(traces, &ntraces);
 
 	prev_sched = traces[0].sched_info;
 	curr_callstack = find_callstack(prev_sched, callstacks, ntasks);
