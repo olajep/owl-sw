@@ -98,14 +98,23 @@ owl_trace_size(union owl_trace trace)
 	return (trace.kind & 1) ? 8 : 4;
 }
 
-/* TODO: Remove me when we have verified that the bufptr logic works in
- * H/W and the Linux device driver. */
 static bool
-owl_trace_empty_p(union owl_trace trace)
+owl_trace_valid_p(union owl_trace trace)
 {
 	const union owl_trace empty = { 0 };
+	switch (trace.kind) {
+	case OWL_TRACE_KIND_UECALL:
+	case OWL_TRACE_KIND_RETURN:
+	case OWL_TRACE_KIND_SECALL:
+	case OWL_TRACE_KIND_TIMESTAMP:
+	case OWL_TRACE_KIND_EXCEPTION:
+	case OWL_TRACE_KIND_PCHI:
+		break;
+	default:
+		return false;
+	}
 
-	return memcmp(&trace, &empty, sizeof(empty)) == 0;
+	return memcmp(&trace, &empty, sizeof(empty)) != 0;
 }
 
 static uint64_t
@@ -791,7 +800,7 @@ populate_frame(const struct dump_trace *traces, size_t ntraces, size_t i,
 	for (;i < ntraces; i++) {
 		trace = traces[i].trace;
 
-		assert(!owl_trace_empty_p(trace));
+		assert(owl_trace_valid_p(trace));
 
 		switch (trace.kind) {
 		case OWL_TRACE_KIND_EXCEPTION:
@@ -838,7 +847,7 @@ count_traces(const uint8_t *tracebuf, size_t tracebuf_size,
 		memcpy(&trace, &tracebuf[i], min(8, tracebuf_size - i));
 		if (i >= tracebuf_size)
 			break;
-		assert(!owl_trace_empty_p(trace));
+		assert(owl_trace_valid_p(trace));
 		i += owl_trace_size(trace);
 		if (i > tracebuf_size) {
 			/* Edge case: H/W packs data in 64-bit chunks before
@@ -1059,41 +1068,47 @@ find_callstack(const struct owl_sched_info *sched_info,
 static int
 __compute_initial_frame_level(struct dump_trace *traces, size_t ntraces)
 {
-	int curr_frame, start_frame, direction;
-	int guesses[] = { 1, 0, 2 }; /* Optimize for common case */
-	bool valid;
+	int initial = -1;
 	unsigned kind;
-	size_t g, i;
+	size_t i;
 
 	if (!ntraces)
 		return 0;
 
-	/* Brute force walk trace buffer until we find a valid solution. */
-	for (g = 0; g < ARRAY_SIZE(guesses); g++) {
-		valid = true;
-		start_frame = guesses[g];
-		curr_frame = start_frame;
-		for (i = 0; i < ntraces; i++) {
-			kind = traces[i].trace.kind;
-			switch (kind) {
-			case OWL_TRACE_KIND_SECALL:
-			case OWL_TRACE_KIND_EXCEPTION:
-			case OWL_TRACE_KIND_UECALL:
-			case OWL_TRACE_KIND_RETURN:
-				break;
-			default: continue;
-			}
-			direction = kind == OWL_TRACE_KIND_RETURN ? -1 : 1;
-			curr_frame += direction;
-			if (curr_frame < 0 || 3 <= curr_frame) {
-				valid = false;
-				break;
-			}
-		}
-		if (valid)
+	/* First find a UECALL or SECALL to get a reference point. */
+	for (i = 0; i < ntraces; i++) {
+		kind = traces[i].trace.kind;
+		switch (kind) {
+		case OWL_TRACE_KIND_SECALL:
+			initial = 1;
 			break;
+		case OWL_TRACE_KIND_UECALL:
+			initial = 0;
+			break;
+		default:
+			continue;
+		}
+		break;
 	}
-	return valid ? start_frame : -1;
+	if (initial == -1)
+		return -1;
+
+	/* Second part. Trace backwards and count returns. */
+	for (; i <= 0; i--) {
+		kind = traces[i].trace.kind;
+		switch (kind) {
+		case OWL_TRACE_KIND_RETURN:
+			initial++;
+			break;
+		case OWL_TRACE_KIND_EXCEPTION:
+			initial--;
+			break;
+		}
+	}
+	if (0 <= initial && initial <= 3)
+		return initial;
+	else
+		return -1;
 }
 
 static int
@@ -1233,6 +1248,11 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		 * matching ecall trace for the first return trace. */
 		if (traces[i].trace.kind == OWL_TRACE_KIND_RETURN) {
 			to_frame--;
+			if (to_frame < 0) {
+				fprintf(stdout, "WARNING: trace %lu to_frame=%d, adjusting\n", i, to_frame);
+				fprintf(stderr, "WARNING: trace %lu to_frame=%d, adjusting\n", i, to_frame);
+				to_frame = 0;
+			}
 			/* H/W writes the PCHI trace after the normal
 			 * trace so we need to look forward in the
 			 * buffer to find it. */
@@ -1248,8 +1268,32 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				       &pchi[from_frame],
 				       from_frame, pchi_traces, npchitraces);
 			to_frame++;
+
+			switch (traces[i].trace.kind) {
+			case OWL_TRACE_KIND_UECALL:
+				if (to_frame != 1) {
+					fprintf(stderr, "WARNING: trace %lu to_frame=%d but expect 1\n", i, to_frame);
+					fprintf(stdout, "WARNING: trace %lu to_frame=%d but expect 1\n", i, to_frame);
+				}
+				break;
+			case OWL_TRACE_KIND_SECALL:
+				if (to_frame != 2)
+					fprintf(stderr, "WARNING: trace %lu to_frame=%d but expect 2\n", i, to_frame);
+				break;
+			}
+
 			curr_callstack->frames[from_frame].pchi = pchi[from_frame];
 			curr_callstack->frames[to_frame].enter_trace = &traces[i];
+		}
+		if (!(0 <= to_frame && to_frame < 3)) {
+			fprintf(stderr, "WARNING: trace %lu to_frame=%d, adjusting\n", i, to_frame);
+			to_frame = max (to_frame, 0);
+			to_frame = min (to_frame, 2);
+		}
+		if (!(0 <= from_frame && from_frame < 3)) {
+			fprintf(stderr, "WARNING: trace %lu from_frame=%d, adjusting\n", i, from_frame);
+			from_frame = max (from_frame, 0);
+			from_frame = min (from_frame, 2);
 		}
 		assert(0 <= to_frame && to_frame < 3);
 		assert(0 <= from_frame && from_frame < 3);
@@ -1263,13 +1307,18 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.num_map_entries	= num_map_entries,
 				.pc_bits		= 39,
 				.sign_extend_pc		= true,
-				.delim			= '\n'
+				.delim			= '\n',
+				.start_time		= traces[0].timestamp
 			};
 			printfn[traces[i].trace.kind](&args, curr_callstack);
 		}
 
-		if (traces[i].trace.kind == OWL_TRACE_KIND_RETURN)
-			curr_callstack->frames[from_frame].enter_trace = NULL;
+		if (traces[i].trace.kind == OWL_TRACE_KIND_RETURN) {
+			/* HACK */
+			curr_callstack->frames[from_frame].enter_trace =
+				&default_enter0;
+			curr_callstack->frames[from_frame].return_trace = NULL;
+		}
 	}
 
 	/*
