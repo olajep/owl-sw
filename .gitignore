@@ -3,3 +3,8 @@ dump*.bin
 
 # Object files
 *.o
+
+/syscalltable-gen.h
+/owl
+/dump
+/offs2vaddr
