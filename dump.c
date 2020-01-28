@@ -81,6 +81,8 @@ struct print_args {
 	bool sign_extend_pc;
 
 	char delim;
+
+	uint64_t start_time;
 };
 
 struct map_search_key {
@@ -388,6 +390,12 @@ describe_frame_enter(struct call_frame *frame, const char **type,
 	}
 }
 
+static llu_t
+rel_timestamp(struct print_args *a, const struct dump_trace *trace)
+{
+	return trace->timestamp - a->start_time;
+}
+
 /* End print helper functions */
 
 static void
@@ -432,7 +440,7 @@ print_return_trace(struct print_args *a, struct callstack *c)
 	binary = binary_name(a, c, &pc, &offset);
 
 	printf("@=[%020llu] %-5s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]%c",
-	       (llu_t) this_frame(c)->return_trace->timestamp, type,
+	       rel_timestamp(a, this_frame(c)->return_trace), type,
 	       (llu_t) pc, this_frame(c)->return_trace->trace.ret.regval, binary,
 	       (llu_t) offset, a->delim);
 }
@@ -445,7 +453,7 @@ print_exception_trace(struct print_args *a, struct callstack *c)
 
 	describe_frame_enter(this_frame(c), &type, &name, &desc, &cause);
 	printf("@=[%020llu] %s\t%s=[0x%03x] name=%s%c",
-	       (llu_t) this_frame(c)->enter_trace->timestamp, type, desc, cause, name,
+	       rel_timestamp(a, this_frame(c)->enter_trace), type, desc, cause, name,
 	       a->delim);
 }
 
@@ -453,9 +461,9 @@ static void
 print_timestamp_trace(struct print_args *a, struct callstack *c)
 {
 	(void)c;
-	uint64_t timestamp = a->trace->timestamp;
 	printf("@=[%020llu] timestamp\tt=[%020llu]%c",
-	       (llu_t) timestamp, (llu_t) a->trace->trace.timestamp.timestamp,
+	       rel_timestamp(a, a->trace),
+	       (llu_t) a->trace->trace.timestamp.timestamp,
 	       a->delim);
 }
 
@@ -523,7 +531,7 @@ flame_recurse_down(struct print_args *a, struct callstack *c, int level)
 
 	real_print_flame_trace[this_frame(c)->enter_trace->trace.kind](a, c);
 	if (terminate) {
-		printf("%llu\n", (llu_t) this_frame(c)->enter_trace->timestamp);
+		printf("%llu\n", rel_timestamp(a, this_frame(c)->enter_trace));
 		return;
 	}
 
@@ -539,7 +547,7 @@ flame_recurse_up(struct print_args *a, struct callstack *c, int level)
 	a->delim = terminate ? ' ' : ';';
 	if (terminate) {
 		real_print_flame_trace[this_frame(c)->return_trace->trace.kind](a, c);
-		printf("%llu\n", (llu_t) this_frame(c)->return_trace->timestamp);
+		printf("%llu\n", rel_timestamp(a, this_frame(c)->return_trace));
 		return;
 	} else {
 		c->frameno++;
@@ -1207,7 +1215,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	/* Print first scheduled task */
 	if (options->outfmt != OUTFMT_FLAME)
 		filtered_print_sched_info(prev_sched,
-					  traces[0].trace.timestamp.timestamp,
+					  0,
 					  cpu, '\n');
 
 	for (i = 0; i < ntraces; i++) {
@@ -1228,12 +1236,12 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				while (prev_sched != traces[i].sched_info) {
 					filtered_print_sched_info(
 						prev_sched,
-						prev_sched->timestamp,
+						prev_sched->timestamp - traces[0].timestamp,
 						cpu, '\n');
 					prev_sched++;
 				}
 				filtered_print_sched_info(traces[i].sched_info,
-							  prev_sched->timestamp,
+							  prev_sched->timestamp - traces[0].timestamp,
 							  cpu, '\n');
 			}
 		}
@@ -1331,7 +1339,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			&sched_info[sched_info_size / sizeof(*sched_info)];
 		while (++prev_sched < end_sched) {
 			filtered_print_sched_info(prev_sched,
-						  prev_sched->timestamp,
+						  prev_sched->timestamp - traces[0].timestamp,
 						  cpu, '\n');
 		}
 	}
