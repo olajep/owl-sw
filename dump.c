@@ -966,6 +966,34 @@ unique_tasks(const struct owl_sched_info_full *sched_info, size_t sched_info_siz
 	return n;
 }
 
+/* This is ugly. We convert all traces to full traces to get the process names.
+ * This will break once we compress the non-full traces in the kernel
+ * drivers... */
+static void
+fill_in_missing_comms(struct owl_sched_info_full *sched_info,
+		      size_t sched_info_size)
+{
+	const size_t num_sched_entries = sched_info_size / sizeof(*sched_info);
+	size_t i, j;
+
+	for (i = 1; i < num_sched_entries; i++) {
+		if (sched_info[i].base.full_trace)
+			continue;
+		/* Walk backwards until we find the comm in a previous trace */
+		for (j = i; j > 0; j--) {
+			if (!sched_info[j - 1].base.full_trace ||
+			    !sched_task_eq_p(&sched_info[i].base,
+				    	     &sched_info[j - 1].base))
+				continue;
+
+			memcpy(sched_info[i].comm, sched_info[j - 1].comm,
+			       OWL_TASK_COMM_LEN);
+			sched_info[i].base.full_trace = 1;
+			break;
+		}
+	}
+}
+
 static void
 create_tasks(struct owl_task *tasks, size_t ntasks,
 	     const struct owl_sched_info_full *sched_info, size_t sched_info_size)
@@ -979,12 +1007,20 @@ create_tasks(struct owl_task *tasks, size_t ntasks,
 
 	/* Simple O^2 search */
 	for (i = 0; i < num_meta_entries && !done; i++) {
+		bool have_comm = false;
+
 		if (counted[i])
 			continue;
+		have_comm = sched_info[i].base.full_trace;
 
 		tasks[n].pid = sched_info[i].base.pid;
 		tasks[n].ppid = sched_info[i].base.ppid;
-		memcpy(tasks[n].comm, sched_info[i].comm, OWL_TASK_COMM_LEN);
+
+		if (sched_info[i].base.full_trace) {
+			memcpy(tasks[n].comm, sched_info[i].comm,
+			       OWL_TASK_COMM_LEN);
+			have_comm = true;
+		}
 
 		counted[i] = true;
 		done = true;
@@ -994,8 +1030,19 @@ create_tasks(struct owl_task *tasks, size_t ntasks,
 			if (counted[j])
 				continue;
 
-			if (sched_task_eq_p(&sched_info[i].base, &sched_info[j].base))
+			if (sched_task_eq_p(&sched_info[i].base,
+					    &sched_info[j].base)) {
 				counted[j] = true;
+				if (have_comm)
+					continue;
+
+				if (sched_info[j].base.full_trace) {
+					memcpy(tasks[n].comm,
+					       sched_info[j].comm,
+					       OWL_TASK_COMM_LEN);
+					have_comm = true;
+				}
+			}
 			else
 				done = false; /* at least one more unique */
 		}
@@ -1237,6 +1284,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	callstacks = calloc(ntasks, sizeof(*callstacks));
 	assert(tasks != NULL && traces != NULL && callstacks != NULL &&
 	       pchi_traces != NULL);
+
+	fill_in_missing_comms((struct owl_sched_info_full *) sched_info,
+			      sched_info_size);
 
 	preprocess_traces(traces, tracebuf, tracebuf_size, ntraces,
 			  sched_info, sched_info_size, pchi_traces, cpu);
