@@ -53,7 +53,7 @@ do {								\
 struct dump_trace {
 	uint64_t			timestamp;
 	union owl_trace			trace;
-	const struct owl_sched_info_full	*sched_info;
+	const struct owl_sched_info_full *sched_info;
 };
 
 struct call_frame {
@@ -933,50 +933,46 @@ task_eq_p(const struct owl_task *a,
 /* count unique number of tasks in trace
  * TODO: We assume that there is no pid reuse during the time we're sampling */
 static size_t
-unique_tasks(const struct owl_sched_info_full *sched_info, size_t sched_info_size)
+unique_tasks(const struct owl_sched_info_full *sched_info,
+	     size_t sched_info_entries)
 {
 	size_t i, j, n = 0;
-	const size_t num_meta_entries = sched_info_size / sizeof(*sched_info);
 	bool *counted, done = false;
 
 	/* Track already counted entires */
-	counted = calloc(num_meta_entries, sizeof(*sched_info));
+	counted = calloc(sched_info_entries, sizeof(*counted));
 
 	/* Simple O^2 search */
-	for (i = 0; i < num_meta_entries && !done; i++) {
+	for (i = 0; i < sched_info_entries && !done; i++) {
+
 		if (counted[i])
 			continue;
 
+		/* Mark the duplicates */
 		done = true;
-
-		/* mark the duplicates */
-		for (j = i + 1; j < num_meta_entries; j++) {
+		for (j = i + 1; j < sched_info_entries; j++) {
 			if (counted[j])
 				continue;
 
-			if (sched_task_eq_p(&sched_info[i].base, &sched_info[j].base))
+			if (sched_task_eq_p(&sched_info[i].base,
+					    &sched_info[j].base))
 				counted[j] = true;
 			else
 				done = false; /* at least one more unique */
 		}
 		n++;
 	}
-
 	free(counted);
 	return n;
 }
 
-/* This is ugly. We convert all traces to full traces to get the process names.
- * This will break once we compress the non-full traces in the kernel
- * drivers... */
 static void
 fill_in_missing_comms(struct owl_sched_info_full *sched_info,
-		      size_t sched_info_size)
+		      size_t sched_info_entries)
 {
-	const size_t num_sched_entries = sched_info_size / sizeof(*sched_info);
 	size_t i, j;
 
-	for (i = 1; i < num_sched_entries; i++) {
+	for (i = 1; i < sched_info_entries; i++) {
 		if (sched_info[i].base.full_trace)
 			continue;
 		/* Walk backwards until we find the comm in a previous trace */
@@ -994,19 +990,45 @@ fill_in_missing_comms(struct owl_sched_info_full *sched_info,
 	}
 }
 
+struct owl_sched_info_full *
+unpack_sched_info(const uint8_t *sched_info_buf, size_t sched_info_size,
+		  size_t sched_info_entries)
+{
+	size_t i, offs, entry_size;
+	struct owl_sched_info_full *sched_info;
+	const struct owl_sched_info *entry;
+
+	sched_info	= calloc(sched_info_entries, sizeof(*sched_info));
+	if (sched_info == NULL)
+		return NULL;
+
+	for (i = 0, offs = 0;
+	     i < sched_info_entries && offs < sched_info_size;
+	     i++, offs += entry_size) {
+		entry = (const struct owl_sched_info *)
+				&sched_info_buf[offs];
+		entry_size = owl_sched_info_entry_size(entry);
+
+		memcpy(&sched_info[i], &sched_info_buf[offs], entry_size);
+	}
+	fill_in_missing_comms(sched_info, sched_info_entries);
+
+	return sched_info;
+}
+
+
 static void
 create_tasks(struct owl_task *tasks, size_t ntasks,
-	     const struct owl_sched_info_full *sched_info, size_t sched_info_size)
+	     const struct owl_sched_info_full *sched_info, size_t sched_info_entries)
 {
 	size_t i, j, n = 0;
-	const size_t num_meta_entries = sched_info_size / sizeof(*sched_info);
 	bool *counted, done = false;
 
 	/* Track already counted entires */
-	counted = calloc(num_meta_entries, sizeof(*sched_info));
+	counted = calloc(sched_info_entries, sizeof(*sched_info));
 
 	/* Simple O^2 search */
-	for (i = 0; i < num_meta_entries && !done; i++) {
+	for (i = 0; i < sched_info_entries && !done; i++) {
 		bool have_comm = false;
 
 		if (counted[i])
@@ -1026,7 +1048,7 @@ create_tasks(struct owl_task *tasks, size_t ntasks,
 		done = true;
 
 		/* mark the duplicates */
-		for (j = i + 1; j < num_meta_entries; j++) {
+		for (j = i + 1; j < sched_info_entries; j++) {
 			if (counted[j])
 				continue;
 
@@ -1059,7 +1081,7 @@ static void
 preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		  size_t tracebuf_size, size_t n,
 		  const struct owl_sched_info_full *sched_info,
-		  size_t sched_info_size,
+		  size_t sched_info_entries,
 		  struct dump_trace **pchi_traces,
 		  int cpu)
 {
@@ -1068,10 +1090,9 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0;
 	uint64_t next_sched = 0ULL;
 	unsigned prev_lsb_timestamp = 0;
-	const size_t num_meta_entries = sched_info_size / sizeof(*sched_info);
 	const struct owl_sched_info_full *curr_sched = &sched_info[0];
 	const struct owl_sched_info_full
-		*last_sched = &sched_info[num_meta_entries - 1];
+		*last_sched = &sched_info[sched_info_entries - 1];
 
 	/* Scheduling info is in one conescutive stream so we need to
 	 * filter out the events that belong to this cpu */
@@ -1248,7 +1269,8 @@ compute_initial_frame_level(struct dump_trace *traces, size_t *ntraces)
 }
 
 void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
-		const struct owl_sched_info_full *sched_info, size_t sched_info_size,
+		const uint8_t *sched_info_buf, size_t sched_info_size,
+		size_t sched_info_entries,
 		struct owl_map_info *maps, size_t map_info_size,
 		struct options *options)
 {
@@ -1258,6 +1280,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	int to_frame = 0, from_frame; /* See comment about callstack/frame levels */
 	printfn_t *printfn;
 	const struct owl_sched_info_full *prev_sched;
+	struct owl_sched_info_full *sched_info;
 	size_t ntraces, npchitraces, ntasks;
 	struct dump_trace *traces, **pchi_traces;
 	struct owl_task *tasks;
@@ -1274,8 +1297,14 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 
 	/* Count number of traces */
 	count_traces(tracebuf, tracebuf_size, &ntraces, &npchitraces);
+
+	/* Unpack scheduling info to full format */
+	sched_info = unpack_sched_info(sched_info_buf, sched_info_size,
+				       sched_info_entries);
+	assert(sched_info != NULL);
+
 	/* Count number of unique tasks */
-	ntasks = unique_tasks(sched_info, sched_info_size);
+	ntasks = unique_tasks(sched_info, sched_info_entries);
 	if (!ntraces || !ntasks)
 		return;
 	traces = calloc(ntraces, sizeof(*traces));
@@ -1285,13 +1314,10 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	assert(tasks != NULL && traces != NULL && callstacks != NULL &&
 	       pchi_traces != NULL);
 
-	fill_in_missing_comms((struct owl_sched_info_full *) sched_info,
-			      sched_info_size);
-
 	preprocess_traces(traces, tracebuf, tracebuf_size, ntraces,
-			  sched_info, sched_info_size, pchi_traces, cpu);
+			  sched_info, sched_info_entries, pchi_traces, cpu);
 
-	create_tasks(tasks, ntasks, sched_info, sched_info_size);
+	create_tasks(tasks, ntasks, sched_info, sched_info_entries);
 
 	init_callstacks(callstacks, tasks, ntasks);
 
@@ -1311,7 +1337,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	curr_callstack = find_callstack(prev_sched, callstacks, ntasks);
 	/* Print first scheduled task */
 	if (options->outfmt != OUTFMT_FLAME)
-		filtered_print_sched_info(prev_sched,
+		filtered_print_sched_info(traces[0].sched_info,
 					  0,
 					  cpu, '\n');
 
@@ -1433,7 +1459,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	 */
 	if (options->outfmt != OUTFMT_FLAME) {
 		const struct owl_sched_info_full *end_sched =
-			&sched_info[sched_info_size / sizeof(*sched_info)];
+			&sched_info[sched_info_entries];
 		while (++prev_sched < end_sched) {
 			filtered_print_sched_info(prev_sched,
 						  prev_sched->base.timestamp - traces[0].timestamp,
@@ -1442,6 +1468,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	}
 
 	free(traces);
+	free(sched_info);
 	free(pchi_traces);
 	free(tasks);
 	free(callstacks);
@@ -1564,6 +1591,7 @@ void print_file_header(const struct owl_trace_file_header *fh)
 	printf("tracebuf_size:\t\t%lu\n", fh->tracebuf_size);
 	printf("tracebuf_offs:\t\t%lu\n", fh->tracebuf_offs);
 	printf("sched_info_size:\t%lu\n", fh->sched_info_size);
+	printf("sched_info_entries:\t%lu\n", fh->sched_info_entries);
 	printf("sched_info_offs:\t%lu\n", fh->sched_info_offs);
 	printf("map_info_size:\t\t%lu\n", fh->map_info_size);
 	printf("map_info_offs:\t\t%lu\n", fh->map_info_offs);
@@ -1589,11 +1617,12 @@ main(int argc, char *argv[])
 {
 	const uint8_t *buf, *tracebuf, *payload;
 	const struct owl_trace_file_header *file_header;
-	const struct owl_sched_info_full *sched_info;
+	const uint8_t *sched_info_buf;
 	const struct owl_stream_info *stream_info;
 	struct owl_map_info *map_info;
 	int fd;
-	size_t buf_size, tracebuf_size, sched_info_size, map_info_size;
+	size_t buf_size, tracebuf_size, sched_info_size, sched_info_entries;
+	size_t map_info_size;
 	struct options options = { 0 };
 
 	/* Disable line buffering */
@@ -1628,9 +1657,10 @@ main(int argc, char *argv[])
 		      (payload + file_header->stream_info_offs);
 	tracebuf = payload + file_header->tracebuf_offs;
 	tracebuf_size = file_header->tracebuf_size;
-	sched_info = (const struct owl_sched_info_full *)
-		     (payload + file_header->sched_info_offs);
+	sched_info_buf = (const uint8_t *)
+			 (payload + file_header->sched_info_offs);
 	sched_info_size = file_header->sched_info_size;
+	sched_info_entries = file_header->sched_info_entries;
 	map_info = (struct owl_map_info *)
 		   (payload + file_header->map_info_offs);
 	map_info_size = file_header->map_info_size;
@@ -1645,7 +1675,7 @@ main(int argc, char *argv[])
 		const struct owl_stream_info
 			*cpu_si = &stream_info[options.cpu];
 		dump_trace(&tracebuf[cpu_si->offs], cpu_si->size,
-			   sched_info, sched_info_size,
+			   sched_info_buf, sched_info_size, sched_info_entries,
 			   map_info, map_info_size,
 			   &options);
 	}
