@@ -34,11 +34,13 @@ struct options {
 	enum command cmd;
 	char *path;
 	bool ignore_illegal_insn;
+	bool verbose;
 };
 #define INIT_OPTIONS { \
 	.cmd = CMD_NR_COMMANDS, \
 	.path = "/dev/tracectrl0", \
-	.ignore_illegal_insn = true } /* TODO: This should be configurable */
+	.ignore_illegal_insn = true, /* TODO: This should be configurable */ \
+	.verbose = false }
 
 struct state {
 	int fd;
@@ -62,6 +64,11 @@ parse_cmdline(int argc, char *argv[], struct options *options)
 
 	if (argc < 3)
 		return 1;
+
+	if (strcmp("-v", argv[1]) == 0 || strcmp("--verbose", argv[1]) == 0) {
+		options->verbose = true;
+		argv++;
+	}
 
 	if (strcmp("trace", argv[1]))
 		return 1;
@@ -147,6 +154,9 @@ do_dump(struct options *options, struct state *state)
 		return ret;
 	}
 
+	if (options->verbose)
+		print_status(stderr, &status);
+
 	header.max_tracebuf_size = status.tracebuf_size;
 	header.max_sched_info_size = status.sched_info_size;
 	header.max_map_info_size = status.map_info_size;
@@ -181,6 +191,25 @@ do_dump(struct options *options, struct state *state)
 	if (ret) {
 		perror("dump");
 		goto free_mapinfobuf;
+	}
+
+	if (options->verbose) {
+		fprintf(stderr, "\n");
+		fprintf(stderr, "Header:\n\n");
+		fprintf(stderr, "tracebuf: 0x%llx\n", (long long) header.tracebuf);
+		fprintf(stderr, "schedinfobuf: 0x%llx\n", (long long) header.schedinfobuf);
+		fprintf(stderr, "mapinfobuf: 0x%llx\n", (long long) header.mapinfobuf);
+		fprintf(stderr, "streaminfobuf: 0x%llx\n", (long long) header.streaminfobuf);
+		fprintf(stderr, "max_tracebuf_size: %llu\n", header.max_tracebuf_size);
+		fprintf(stderr, "max_sched_info_size: %llu\n", header.max_sched_info_size);
+		fprintf(stderr, "max_map_info_size: %llu\n", header.max_map_info_size);
+		fprintf(stderr, "max_stream_info_size: %llu\n", header.max_stream_info_size);
+		fprintf(stderr, "trace_format: %d\n", (int) header.trace_format);
+		fprintf(stderr, "tracebuf_size: %llu\n", header.tracebuf_size);
+		fprintf(stderr, "sched_info_size: %llu\n", header.sched_info_size);
+		fprintf(stderr, "sched_info_entries: %llu\n", header.sched_info_entries);
+		fprintf(stderr, "map_info_size: %llu\n", header.map_info_size);
+		fprintf(stderr, "stream_info_size: %llu\n", header.stream_info_size);
 	}
 
 	file_header.magic		= OWL_TRACE_FILE_HEADER_MAGIC;
@@ -261,7 +290,7 @@ fini(struct options *options, struct state *state)
 void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s trace [start|stop|dump|status]\n",
+		"usage: %s [-v | verbose] trace [start|stop|dump|status]\n",
 		argv0);
 }
 
