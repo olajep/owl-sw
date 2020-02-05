@@ -22,6 +22,7 @@ struct owl_trace_file_header {
 	uint64_t tracebuf_size;
 	uint64_t tracebuf_offs;
 	uint64_t sched_info_size;
+	uint64_t sched_info_entries;
 	uint64_t sched_info_offs;
 	uint64_t map_info_size;
 	uint64_t map_info_offs;

@@ -191,6 +191,7 @@ do_dump(struct options *options, struct state *state)
 	file_header.stream_info_size	= header.stream_info_size;
 	file_header.tracebuf_size	= header.tracebuf_size;
 	file_header.sched_info_size	= header.sched_info_size;
+	file_header.sched_info_entries	= header.sched_info_entries;
 	file_header.map_info_size	= header.map_info_size;
 	offs = 0;
 	file_header.stream_info_offs	= offs;
