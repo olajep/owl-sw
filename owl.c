@@ -25,6 +25,7 @@ enum command {
 	CMD_START,
 	CMD_STOP,
 	CMD_DUMP,
+	CMD_STATUS,
 	CMD_INVALID,
 	CMD_NR_COMMANDS = CMD_INVALID,
 };
@@ -49,6 +50,7 @@ const char *str_to_cmd[CMD_NR_COMMANDS + 1] = {
 	[CMD_START]		= "start",
 	[CMD_STOP]		= "stop",
 	[CMD_DUMP]		= "dump",
+	[CMD_STATUS]		= "status",
 	[CMD_NR_COMMANDS]	= NULL,
 };
 
@@ -102,11 +104,37 @@ do_stop(struct options *options, struct state *state)
 	return ioctl(state->fd, OWL_IOCTL_DISABLE);
 }
 
+static void
+print_status(FILE* fp, struct owl_status *status)
+{
+	fprintf(fp, "Status:\n\n");
+	fprintf(fp, "enabled: %d\n", status->enabled);
+	fprintf(fp, "ppid: %d\n", status->ppid);
+	fprintf(fp, "tracebuf_size: %llu\n", status->tracebuf_size);
+	fprintf(fp, "sched_info_size: %llu\n", status->sched_info_size);
+	fprintf(fp, "map_info_size: %llu\n", status->map_info_size);
+	fprintf(fp, "stream_info_size: %llu\n", status->stream_info_size);
+}
+
+static int
+do_status(struct options *options, struct state *state)
+{
+	int err;
+	struct owl_status status = { 0 };
+	(void)options;
+
+	err = ioctl(state->fd, OWL_IOCTL_STATUS, &status);
+	if (err)
+		return err;
+
+	print_status(stdout, &status);
+	return 0;
+}
+
+
 static int
 do_dump(struct options *options, struct state *state)
 {
-	(void)options;
-
 	int ret = 0;
 	uint64_t offs;
 	struct owl_status status = { 0 };
@@ -197,6 +225,7 @@ static int
 	[CMD_START]	= do_start,
 	[CMD_STOP]	= do_stop,
 	[CMD_DUMP]	= do_dump,
+	[CMD_STATUS]	= do_status,
 };
 
 static int
@@ -230,7 +259,9 @@ fini(struct options *options, struct state *state)
 
 void usage(const char *argv0)
 {
-	fprintf(stderr, "usage: %s trace [start|stop|dump]\n", argv0);
+	fprintf(stderr,
+		"usage: %s trace [start|stop|dump|status]\n",
+		argv0);
 }
 
 int main(int argc, char *argv[])
