@@ -193,6 +193,25 @@ do_dump(struct options *options, struct state *state)
 		goto free_mapinfobuf;
 	}
 
+	/* Sanity check the buffer sizes. Did the kernel driver write as
+	 * much data as it claimed to have? */
+	if (header.max_tracebuf_size != header.tracebuf_size) {
+		fprintf(stderr, "WARNING: header.max_tracebuf_size != header.tracebuf_size\n");
+		options->verbose = true;
+	}
+	if (header.max_sched_info_size != header.sched_info_size) {
+		fprintf(stderr, "WARNING: header.max_sched_info_size != header.sched_info_size\n");
+		options->verbose = true;
+	}
+	if (header.max_map_info_size != header.map_info_size) {
+		fprintf(stderr, "WARNING: header.max_map_info_size != header.map_info_size\n");
+		options->verbose = true;
+	}
+	if (header.max_stream_info_size != header.stream_info_size) {
+		fprintf(stderr, "WARNING: header.max_stream_info_size != header.stream_info_size\n");
+		options->verbose = true;
+	}
+
 	if (options->verbose) {
 		fprintf(stderr, "\n");
 		fprintf(stderr, "Header:\n\n");
