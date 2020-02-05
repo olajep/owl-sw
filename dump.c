@@ -1507,7 +1507,7 @@ print_usage_and_die(int argc, char **argv, int retval)
 
 	f = retval == EXIT_SUCCESS ? stdout : stderr;
 	fprintf(f,
-		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame]] [--help | -h] FILE\n",
+		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame]] [[--cpu | -c] cpu] [--help | -h] FILE\n",
 		argv[0]);
 		exit(EXIT_FAILURE);
 
