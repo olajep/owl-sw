@@ -7,7 +7,6 @@
 
 #include <unistd.h>
 #include <sys/types.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -25,6 +24,8 @@
 #include "owl-user.h"
 #include "syscalltable.h"
 #include "mcalltable.h"
+
+#define DEFAULT_SYSROOT	"/opt/riscv/sysroot"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define max(x,y) (x > y ? x : y)
@@ -81,6 +82,8 @@ struct print_args {
 	bool sign_extend_pc;
 
 	char delim;
+
+	const char *sysroot;
 
 	uint64_t start_time;
 };
@@ -410,18 +413,121 @@ print_nop(struct print_args *a, struct callstack *c)
 static void
 print_ecall_trace(struct print_args *a, struct callstack *c)
 {
-	const char *type;
+	const char *type, *name;
 	unsigned function;
 
-	describe_frame_enter(this_frame(c), &type, NULL, NULL, &function);
+	describe_frame_enter(this_frame(c), &type, &name, NULL, &function);
 	/* TODO: Support hcall if we add support for it in H/W */
-	printf("@=[%020llu] %s\t\tfunction=[%05d]%c",
-	       (llu_t) this_frame(c)->enter_trace->timestamp, type, function, a->delim);
+	printf("@=[%020llu] %s\t\tfunction=[%05d] name=[%s]%c",
+	       rel_timestamp(a, this_frame(c)->enter_trace), type, function, name, a->delim);
+}
+
+/* TODO: popen() is SLOW!!!. Should use a hashtable. */
+static bool
+source_info(struct print_args *a, struct callstack *c,
+	    char *buf, size_t bufsize, const char *binary, llu_t poffs)
+{
+	llu_t vaddr;
+	FILE *stream;
+	char cmdline[2048], tmp[64];
+	char path[1024];
+	size_t pos = 0;
+	struct stat statbuf;
+	int ret;
+
+	/* Path */
+	pos = 0;
+	strncpy(&path[pos], a->sysroot, sizeof(path) - pos);
+	pos += strnlen(a->sysroot, 1024);
+	if (pos >= sizeof(path))
+		return false;
+	strncpy(&path[pos], binary, sizeof(path) - pos);
+	pos += strnlen(binary, 1024);
+	if (pos >= sizeof(cmdline))
+		return false;
+	path[pos] = '\0';
+
+	if (stat(path, &statbuf) != 0)
+		return false;
+
+	if (strncmp(binary, "'none'", sizeof("'none'")) == 0)
+		return false;
+
+	if (this_frameno(c) > 0) {
+		vaddr = poffs;
+		goto have_vaddr;
+	}
+
+	/* offs2vaddr */
+	pos = 0;
+	strncpy(&cmdline[pos], "./offs2vaddr ", sizeof(cmdline) - pos);
+	pos += strlen("./offs2vaddr ");
+	strncpy(&cmdline[pos], path, sizeof(cmdline) - pos);
+	pos += strnlen(path, 1024);
+	if (pos >= sizeof(cmdline))
+		return false;
+	if (pos >= sizeof(cmdline) + 25)
+		return false;
+	if ((ret = snprintf(&cmdline[pos], 25, " 0x%llx", poffs)) <= 0)
+		return false;
+	pos += ret;
+	if (pos >= sizeof(cmdline))
+		return false;
+	cmdline[pos] = '\0';
+
+	stream = popen(cmdline, "r");
+	if (!stream)
+		return false;
+	if (fscanf(stream, "%32s", tmp) != 1) {
+		pclose(stream);
+		return false;
+	}
+	pclose(stream);
+	vaddr = strtoull(tmp, NULL, 0);
+
+have_vaddr:
+	/* addr2line */
+	pos = 0;
+	strncpy(&cmdline[pos], "addr2line -e ", sizeof(cmdline) - pos);
+	pos += strlen("addr2line -e ");
+	strncpy(&cmdline[pos], path, sizeof(cmdline) - pos);
+	pos += strnlen(path, 1024);
+	if (pos >= sizeof(cmdline))
+		return false;
+	ret = snprintf(&cmdline[pos], sizeof(cmdline) - pos, " 0x%llx ", vaddr);
+	if (ret <= 0)
+		return false;
+	pos += ret;
+	if (pos >= sizeof(cmdline))
+		return false;
+	strncpy(&cmdline[pos], "-f -s", sizeof(cmdline) - pos);
+	pos += sizeof("-f -p");
+	if (pos >= sizeof(cmdline))
+		return false;
+	cmdline[pos] = '\0';
+
+	stream = popen(cmdline, "r");
+	if (!stream)
+		return false;
+	if ((ret = fread(buf, 1, bufsize - 1, stream)) <= 0) {
+		pclose(stream);
+		return false;
+	}
+	pclose(stream);
+	buf[ret - 1] = '\0';
+	char *p = strstr(buf, "\n");
+	if (p)
+		*p = ':';
+
+	return true;
 }
 
 static void
 print_return_trace(struct print_args *a, struct callstack *c)
 {
+	char buf[2048];
+	bool have_source_info;
+
 	/* TODO: Support hcall if we add support for it in H/W */
 	/* TODO: Print time delta */
 	const char *type;
@@ -439,10 +545,11 @@ print_return_trace(struct print_args *a, struct callstack *c)
 	type = return_type(frame_down(c));
 	binary = binary_name(a, c, &pc, &offset);
 
-	printf("@=[%020llu] %-5s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx]%c",
+	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset);
+	printf("@=[%020llu] %-5s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx] source=[%s] %c",
 	       rel_timestamp(a, this_frame(c)->return_trace), type,
 	       (llu_t) pc, this_frame(c)->return_trace->trace.ret.regval, binary,
-	       (llu_t) offset, a->delim);
+	       (llu_t) offset, have_source_info ? buf : "'none'", a->delim);
 }
 
 static void
@@ -485,7 +592,7 @@ print_pchi_trace(struct print_args *a, struct callstack *c)
 	if (a->sign_extend_pc)
 		pchi = sign_extend_pchi(pchi, a->pc_bits);
 	printf("@=[%020llu] pchi=[0x%08x] priv=[%d]%c",
-	       (llu_t) a->trace->timestamp, pchi, a->trace->trace.pchi.priv,
+	       rel_timestamp(a, a->trace), pchi, a->trace->trace.pchi.priv,
 	       a->delim);
 }
 
@@ -616,13 +723,19 @@ print_flame_return_trace(struct print_args *a, struct callstack *c)
 {
 	/* TODO: Support hcall if we add support for it in H/W */
 	uint64_t pc, offset;
+	char buf[2048];
+	bool have_source_info;
 	const char *binary = "'none'";
 
 	pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
 	offset = pc;
 	binary = binary_name(a, c, &pc, &offset);
+	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset);
 
-	printf("file://%s+0x%llx%c", binary, (llu_t) offset, a->delim);
+	if (have_source_info)
+		printf("file://%s+0x%llx [%s]%c", binary, (llu_t) offset, buf, a->delim);
+	else
+		printf("file://%s+0x%llx%c", binary, (llu_t) offset, a->delim);
 }
 
 static printfn_t print_flame_trace[8] = {
@@ -841,6 +954,7 @@ struct options {
 	bool verbose;
 	const char *input;
 	int cpu;
+	const char *sysroot;
 };
 
 static void
@@ -1439,7 +1553,8 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.pc_bits		= 39,
 				.sign_extend_pc		= true,
 				.delim			= '\n',
-				.start_time		= traces[0].timestamp
+				.start_time		= traces[0].timestamp,
+				.sysroot		= options->sysroot ?: DEFAULT_SYSROOT
 			};
 			printfn[traces[i].trace.kind](&args, curr_callstack);
 		}
@@ -1507,7 +1622,7 @@ print_usage_and_die(int argc, char **argv, int retval)
 
 	f = retval == EXIT_SUCCESS ? stdout : stderr;
 	fprintf(f,
-		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame]] [[--cpu | -c] cpu] [--help | -h] FILE\n",
+		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame]] [[--cpu | -c] cpu] [[--sysroot | -s] sysroot] [--help | -h] FILE\n",
 		argv[0]);
 		exit(EXIT_FAILURE);
 
@@ -1528,11 +1643,12 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 			{"verbose", no_argument,       NULL,  'v' },
 			{"format",  required_argument, NULL,  'f' },
 			{"cpu",     required_argument, NULL,  'c' },
+			{"sysroot", required_argument, NULL,  's' },
 			{"help",    no_argument,       NULL,  'h' },
 			{0,         0,                 NULL,  0   }
 		};
 
-		c = getopt_long(argc, argv, "vf:c:h", long_options,
+		c = getopt_long(argc, argv, "vf:c:s:h", long_options,
 				&option_index);
 		if (c == -1)
 			break;
@@ -1554,6 +1670,9 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 				break;
 			case 'c':
 				options->cpu = (int) strtol(optarg, NULL, 0);
+				break;
+			case 's':
+				options->sysroot = optarg;
 				break;
 			case 'h':
 				print_usage_and_die(argc, argv, EXIT_SUCCESS);
