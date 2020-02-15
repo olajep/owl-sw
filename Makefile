@@ -15,8 +15,11 @@ all: $(TARGETS)
 # Remove when owl.h becomes stable and lives in sysroot/usr/include
 dump.o owl.o: owl.h
 
-dump: dump.o
-dump.o: syscalltable.h mcalltable.h
+dump: dump.o source_hashmap.o
+dump.o: syscalltable.h mcalltable.h source_hashmap.h
+
+dump:
+	$(CC) $^ -o $@ -lstdc++
 
 offs2vaddr: offs2vaddr.o
 

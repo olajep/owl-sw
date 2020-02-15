@@ -24,6 +24,7 @@
 #include "owl-user.h"
 #include "syscalltable.h"
 #include "mcalltable.h"
+#include "source_hashmap.h"
 
 #define DEFAULT_SYSROOT	"/opt/riscv/sysroot"
 
@@ -49,6 +50,8 @@ do {								\
 } while (0)
 
 #define STRNCMP_LIT(s, lit) strncmp((s), ""lit"", sizeof((lit)-1))
+
+void *source_info_hashmap;
 
 /* A preprocessed trace with context */
 struct dump_trace {
@@ -435,9 +438,12 @@ source_info(struct print_args *a, struct callstack *c,
 	struct stat statbuf;
 	int ret;
 
+	if (source_hash_find(source_info_hashmap, binary, poffs, buf, bufsize))
+		return true;
+
 	/* Path */
 	pos = 0;
-	strncpy(&path[pos], a->sysroot, sizeof(path) - pos);
+	strncpy(&path[pos], a->sysroot, sizeof(path) - pos - 1);
 	pos += strnlen(a->sysroot, 1024);
 	if (pos >= sizeof(path))
 		return false;
@@ -518,6 +524,9 @@ have_vaddr:
 	char *p = strstr(buf, "\n");
 	if (p)
 		*p = ':';
+
+	// Cache the result
+	source_hash_insert(source_info_hashmap, binary, poffs, buf);
 
 	return true;
 }
@@ -1789,6 +1798,7 @@ main(int argc, char *argv[])
 		print_stream_info(stream_info, file_header->stream_info_size);
 	}
 
+	source_info_hashmap = source_hash_init();
 	{
 		(void)tracebuf_size;
 		const struct owl_stream_info
@@ -1798,6 +1808,7 @@ main(int argc, char *argv[])
 			   map_info, map_info_size,
 			   &options);
 	}
+	source_hash_fini(source_info_hashmap);
 
 	munmap((void *) buf, buf_size);
 	close(fd);
