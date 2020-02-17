@@ -776,7 +776,8 @@ static printfn_t real_print_flame_trace[8] = {
 
 void
 filtered_print_sched_info(const struct owl_sched_info_full *entry,
-			  uint64_t timestamp, int cpu, char delim)
+			  uint64_t timestamp, uint64_t until,
+			  int cpu, char delim)
 {
 	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
 
@@ -785,7 +786,7 @@ filtered_print_sched_info(const struct owl_sched_info_full *entry,
 
 	printf("@=[%020llu] sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]%c",
 	       (llu_t) timestamp, entry->comm, entry->base.pid,
-	       (llu_t) entry->base.timestamp, (int) entry->base.cpu, delim);
+	       (llu_t) until, (int) entry->base.cpu, delim);
 }
 
 int find_compare_maps(const void *_key, const void *_elem)
@@ -1406,7 +1407,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int to_frame = 0, from_frame; /* See comment about callstack/frame levels */
 	printfn_t *printfn;
-	const struct owl_sched_info_full *prev_sched;
+	const struct owl_sched_info_full *prev_sched, *end_sched;
 	struct owl_sched_info_full *sched_info;
 	size_t ntraces, npchitraces, ntasks;
 	struct dump_trace *traces, **pchi_traces;
@@ -1429,6 +1430,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	sched_info = unpack_sched_info(sched_info_buf, sched_info_size,
 				       sched_info_entries);
 	assert(sched_info != NULL);
+	end_sched = &sched_info[sched_info_entries];
 
 	/* Count number of unique tasks */
 	ntasks = unique_tasks(sched_info, sched_info_entries);
@@ -1466,10 +1468,11 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	if (options->outfmt != OUTFMT_FLAME)
 		filtered_print_sched_info(traces[0].sched_info,
 					  0,
+					  traces[0].sched_info->base.timestamp - traces[0].timestamp,
 					  cpu, '\n');
 
 	for (i = 0; i < ntraces; i++) {
-		bool task_switch = prev_sched != traces[i].sched_info;
+		bool task_switch = i && (prev_sched != traces[i].sched_info);
 
 		if (task_switch) {
 			curr_callstack =
@@ -1482,16 +1485,23 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				 * traces.
 				 * TODO: This should be done for FLAME too.
 				 */
-				prev_sched++;
-				while (prev_sched != traces[i].sched_info) {
+				while (prev_sched != traces[i - 1].sched_info) {
+					const struct owl_sched_info_full *next_sched;
+					next_sched = prev_sched;
+					while (++next_sched < end_sched) {
+						if (next_sched->base.cpu == cpu)
+							break;
+					}
 					filtered_print_sched_info(
 						prev_sched,
 						prev_sched->base.timestamp - traces[0].timestamp,
+						next_sched->base.timestamp - traces[0].timestamp,
 						cpu, '\n');
 					prev_sched++;
 				}
 				filtered_print_sched_info(traces[i].sched_info,
 							  prev_sched->base.timestamp - traces[0].timestamp,
+							  traces[i].sched_info->base.timestamp - traces[0].timestamp,
 							  cpu, '\n');
 			}
 		}
@@ -1586,13 +1596,27 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	 * TODO: This should be done for FLAME too.
 	 */
 	if (options->outfmt != OUTFMT_FLAME) {
-		const struct owl_sched_info_full *end_sched =
-			&sched_info[sched_info_entries];
-		while (++prev_sched < end_sched) {
+		const struct owl_sched_info_full *next_sched;
+		while (++prev_sched < end_sched - 1) {
+			next_sched = prev_sched;
+			while (++next_sched < end_sched) {
+				if (next_sched == end_sched)
+					break;
+				if (next_sched->base.cpu == cpu)
+					break;
+			}
+			if (next_sched == end_sched)
+				break;
 			filtered_print_sched_info(prev_sched,
 						  prev_sched->base.timestamp - traces[0].timestamp,
+						  next_sched->base.timestamp - traces[0].timestamp,
 						  cpu, '\n');
 		}
+		/* Last sched info entry doesn't have a end time, fake it. */
+		filtered_print_sched_info(prev_sched,
+					  prev_sched->base.timestamp - traces[0].timestamp,
+					  9999999999999999999ULL,
+					  cpu, '\n');
 	}
 
 	free(traces);
