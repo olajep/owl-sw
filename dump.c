@@ -432,7 +432,7 @@ source_info(struct print_args *a, struct callstack *c,
 {
 	llu_t vaddr;
 	FILE *stream;
-	char cmdline[2048], tmp[64];
+	char cmdline[2048], tmp[64], *p;
 	char path[1024];
 	size_t pos = 0;
 	struct stat statbuf;
@@ -521,9 +521,13 @@ have_vaddr:
 	}
 	pclose(stream);
 	buf[ret - 1] = '\0';
-	char *p = strstr(buf, "\n");
-	if (p)
+	p = strstr(buf, "\n");
+	if (p) {
 		*p = ':';
+		p = strstr(p, " (");
+		if (p)
+			*p = '\0';
+	}
 
 	// Cache the result
 	source_hash_insert(source_info_hashmap, binary, poffs, buf);
