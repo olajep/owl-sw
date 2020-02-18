@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <time.h>
 
 #if 0
 /* When things stabilize and we can move it to the sysroot */
@@ -147,6 +148,8 @@ do_dump(struct options *options, struct state *state)
 	struct owl_status status = { 0 };
 	struct owl_trace_header header = { 0 };
 	struct owl_trace_file_header file_header = { 0 };
+	char filename[256];
+	FILE *file;
 
 	ret = ioctl(state->fd, OWL_IOCTL_STATUS, &status);
 	if (ret) {
@@ -229,10 +232,17 @@ do_dump(struct options *options, struct state *state)
 		fprintf(stderr, "sched_info_entries: %llu\n", header.sched_info_entries);
 		fprintf(stderr, "map_info_size: %llu\n", header.map_info_size);
 		fprintf(stderr, "stream_info_size: %llu\n", header.stream_info_size);
+		fprintf(stderr, "start_time: %llu\n", header.start_time);
+		fprintf(stderr, "stop_time: %llu\n", header.stop_time);
 	}
 
 	file_header.magic		= OWL_TRACE_FILE_HEADER_MAGIC;
 	file_header.trace_format	= header.trace_format;
+	if (gethostname(file_header.hostname, sizeof(file_header.hostname)))
+		memcpy(file_header.hostname, "UNKNOWN", sizeof("UNKNOWN"));
+	file_header.hostname[sizeof(file_header.hostname) - 1] = '\0';
+	file_header.start_time		= header.start_time;
+	file_header.stop_time		= header.stop_time;
 	file_header.num_cpus		= max(1,
 					      header.stream_info_size /
 					      sizeof(struct owl_stream_info));
@@ -251,12 +261,45 @@ do_dump(struct options *options, struct state *state)
 	file_header.map_info_offs	= offs;
 	file_header.sentinel		= OWL_TRACE_FILE_HEADER_SENTINEL;
 
-	fwrite(&file_header, sizeof(file_header), 1, stdout);
-	fwrite(header.streaminfobuf, header.stream_info_size, 1, stdout);
-	fwrite(header.tracebuf, header.tracebuf_size, 1, stdout);
-	fwrite(header.schedinfobuf, header.sched_info_size, 1, stdout);
-	fwrite(header.mapinfobuf, header.map_info_size, 1, stdout);
+	{
+		char timestr[128] = { '\0' };
+		time_t seconds = file_header.start_time / 1000000000L;
+		struct tm *tm = localtime(&seconds);
 
+		if (tm == NULL) {
+			memcpy(timestr, "notime", sizeof("notime"));
+		} else {
+			strftime(timestr, sizeof(timestr),
+				 "%Y-%m-%dT%H%M%S", tm);
+		}
+
+		snprintf(filename, sizeof(filename), "%s-%s.owldump",
+			 file_header.hostname, timestr);
+	}
+
+	if (options->verbose)
+		fprintf(stderr, "Writing dump to %s\n", filename);
+
+	if (access(filename, F_OK) != -1) {
+		/* file exists */
+		fprintf(stderr, "%s: file exists\n", __func__);
+		ret = 5;
+		goto free_mapinfobuf;
+	}
+	file = fopen(filename, "w");
+	if (!file) {
+		perror(__func__);
+		ret = 6;
+		goto free_mapinfobuf;
+	}
+
+	fwrite(&file_header, sizeof(file_header), 1, file);
+	fwrite(header.streaminfobuf, header.stream_info_size, 1, file);
+	fwrite(header.tracebuf, header.tracebuf_size, 1, file);
+	fwrite(header.schedinfobuf, header.sched_info_size, 1, file);
+	fwrite(header.mapinfobuf, header.map_info_size, 1, file);
+
+	fclose(file);
 free_mapinfobuf:
 	free(header.mapinfobuf);
 free_schedinfobuf:

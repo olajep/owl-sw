@@ -15,6 +15,9 @@ extern "C" {
 struct owl_trace_file_header {
 	uint64_t magic;
 	uint32_t trace_format;
+	char	 hostname[32];
+	int64_t  start_time; /* ns since Unix epoch */
+	int64_t  stop_time;  /* ns since Unix epoch */
 	uint16_t num_cpus;
 	unsigned:16; /* reserved */
 	uint64_t stream_info_size;
