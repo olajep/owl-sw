@@ -688,9 +688,13 @@ flame_recurse_callgraph(struct print_args *orig_a, struct callstack *orig_c)
 	a = *orig_a;
 	c = *orig_c;
 
-	printf("%s/%d;",
-	       c.task->comm,
-	       c.task->pid);
+	if (c.task->pid == 0) {
+		/* Special case the idle task */
+		printf("%s;", c.task->comm);
+	} else {
+		printf("%s/%d;", c.task->comm, c.task->pid);
+	}
+
 	c.frameno = 0;
 	if (orig_a->trace->trace.kind != OWL_TRACE_KIND_RETURN)
 		flame_recurse_down(&a, &c, orig_c->frameno);
@@ -1101,6 +1105,13 @@ fill_in_missing_comms(struct owl_sched_info_full *sched_info,
 	size_t i, j;
 
 	for (i = 1; i < sched_info_entries; i++) {
+		if (sched_info[i].base.pid == 0) {
+			/* Detect the idle == swapper task */
+			memcpy(sched_info[i].comm, "idle", sizeof("idle"));
+			sched_info[i].base.full_trace = 1;
+			continue;
+		}
+
 		if (sched_info[i].base.full_trace)
 			continue;
 		/* Walk backwards until we find the comm in a previous trace */
