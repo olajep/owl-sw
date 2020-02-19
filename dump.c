@@ -89,6 +89,8 @@ struct print_args {
 	const char *sysroot;
 
 	uint64_t start_time;
+
+	int cpu;
 };
 
 struct map_search_key {
@@ -421,8 +423,8 @@ print_ecall_trace(struct print_args *a, struct callstack *c)
 
 	describe_frame_enter(this_frame(c), &type, &name, NULL, &function);
 	/* TODO: Support hcall if we add support for it in H/W */
-	printf("@=[%020llu] %s\t\tfunction=[%05d] name=[%s]%c",
-	       rel_timestamp(a, this_frame(c)->enter_trace), type, function, name, a->delim);
+	printf("@=[%020llu] cpu=%03d %s\t\tfunction=[%05d] name=[%s]%c",
+	       rel_timestamp(a, this_frame(c)->enter_trace), a->cpu, type, function, name, a->delim);
 }
 
 /* TODO: popen() is SLOW!!!. Should use a hashtable. */
@@ -559,8 +561,8 @@ print_return_trace(struct print_args *a, struct callstack *c)
 	binary = binary_name(a, c, &pc, &offset);
 
 	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset);
-	printf("@=[%020llu] %-5s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx] source=[%s] %c",
-	       rel_timestamp(a, this_frame(c)->return_trace), type,
+	printf("@=[%020llu] cpu=%03d %-5s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx] source=[%s]%c",
+	       rel_timestamp(a, this_frame(c)->return_trace), a->cpu, type,
 	       (llu_t) pc, this_frame(c)->return_trace->trace.ret.regval, binary,
 	       (llu_t) offset, have_source_info ? buf : "'none'", a->delim);
 }
@@ -572,8 +574,8 @@ print_exception_trace(struct print_args *a, struct callstack *c)
 	unsigned cause;
 
 	describe_frame_enter(this_frame(c), &type, &name, &desc, &cause);
-	printf("@=[%020llu] %s\t%s=[0x%03x] name=%s%c",
-	       rel_timestamp(a, this_frame(c)->enter_trace), type, desc, cause, name,
+	printf("@=[%020llu] cpu=%03d %s\t%s=[0x%03x] name=%s%c",
+	       rel_timestamp(a, this_frame(c)->enter_trace), a->cpu, type, desc, cause, name,
 	       a->delim);
 }
 
@@ -581,8 +583,8 @@ static void
 print_timestamp_trace(struct print_args *a, struct callstack *c)
 {
 	(void)c;
-	printf("@=[%020llu] timestamp\tt=[%020llu]%c",
-	       rel_timestamp(a, a->trace),
+	printf("@=[%020llu] cpu=%03d timestamp\tt=[%020llu]%c",
+	       rel_timestamp(a, a->trace), a->cpu,
 	       (llu_t) a->trace->trace.timestamp.timestamp,
 	       a->delim);
 }
@@ -604,9 +606,9 @@ print_pchi_trace(struct print_args *a, struct callstack *c)
 	uint32_t pchi = a->trace->trace.pchi.pchi;
 	if (a->sign_extend_pc)
 		pchi = sign_extend_pchi(pchi, a->pc_bits);
-	printf("@=[%020llu] pchi=[0x%08x] priv=[%d]%c",
-	       rel_timestamp(a, a->trace), pchi, a->trace->trace.pchi.priv,
-	       a->delim);
+	printf("@=[%020llu] cpu=%03d pchi=[0x%08x] priv=[%d]%c",
+	       rel_timestamp(a, a->trace), a->cpu, pchi,
+	       a->trace->trace.pchi.priv, a->delim);
 }
 
 static printfn_t default_print_trace[8] = {
@@ -788,8 +790,9 @@ filtered_print_sched_info(const struct owl_sched_info_full *entry,
 	if (entry->base.cpu != cpu)
 		return;
 
-	printf("@=[%020llu] sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]%c",
-	       (llu_t) timestamp, entry->comm, entry->base.pid,
+	printf("@=[%020llu] cpu=%03d sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]%c",
+	       (llu_t) timestamp, (int) entry->base.cpu,
+	       entry->comm, entry->base.pid,
 	       (llu_t) until, (int) entry->base.cpu, delim);
 }
 
@@ -1588,7 +1591,8 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.sign_extend_pc		= true,
 				.delim			= '\n',
 				.start_time		= traces[0].timestamp,
-				.sysroot		= options->sysroot ?: DEFAULT_SYSROOT
+				.sysroot		= options->sysroot ?: DEFAULT_SYSROOT,
+				.cpu			= options->cpu
 			};
 			printfn[traces[i].trace.kind](&args, curr_callstack);
 		}
