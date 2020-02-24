@@ -44,12 +44,16 @@ do {								\
 do {								\
 	static int _warned = 0;					\
 	if (!_warned && cond) {					\
-		fprintf(stderr, "WARNING: " fmt, __VA_ARGS__);	\
+		fprintf(stdwarn, "WARNING: " fmt, __VA_ARGS__);	\
 		_warned = 1;					\
 	}							\
 } while (0)
 
 #define STRNCMP_LIT(s, lit) strncmp((s), ""lit"", sizeof((lit)-1))
+
+/* Where warnings should be printed to. This is set in main after the call to
+ * parse_options_or_die()  */
+static FILE *stdwarn = NULL;
 
 static void *source_info_hashmap;
 
@@ -1546,10 +1550,11 @@ compute_initial_frame_level(struct dump_trace *traces, size_t *ntraces)
 		m--;
 		start_frame = __compute_initial_frame_level(traces, m);
 	}
+
 	if (m == 0)
 		start_frame = 0;
 	if (m != *ntraces) {
-		fprintf(stderr,
+		fprintf(stdwarn,
 			"%s: WARNING: Trace broken after %lu traces. Total traces: %lu\n",
 			__func__, m, *ntraces);
 	}
@@ -1683,8 +1688,7 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 		if (traces[i].trace.kind == OWL_TRACE_KIND_RETURN) {
 			to_frame--;
 			if (to_frame < 0) {
-				fprintf(stdout, "WARNING: trace %lu to_frame=%d, adjusting\n", i, to_frame);
-				fprintf(stderr, "WARNING: trace %lu to_frame=%d, adjusting\n", i, to_frame);
+				fprintf(stdwarn, "WARNING: trace %lu to_frame=%d, adjusting\n", i, to_frame);
 				to_frame = 0;
 			}
 			/* H/W writes the PCHI trace after the normal
@@ -1706,13 +1710,12 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			switch (traces[i].trace.kind) {
 			case OWL_TRACE_KIND_UECALL:
 				if (to_frame != 1) {
-					fprintf(stderr, "WARNING: trace %lu to_frame=%d but expect 1\n", i, to_frame);
-					fprintf(stdout, "WARNING: trace %lu to_frame=%d but expect 1\n", i, to_frame);
+					fprintf(stdwarn, "WARNING: trace %lu to_frame=%d but expect 1\n", i, to_frame);
 				}
 				break;
 			case OWL_TRACE_KIND_SECALL:
 				if (to_frame != 2)
-					fprintf(stderr, "WARNING: trace %lu to_frame=%d but expect 2\n", i, to_frame);
+					fprintf(stdwarn, "WARNING: trace %lu to_frame=%d but expect 2\n", i, to_frame);
 				break;
 			}
 
@@ -1720,12 +1723,12 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			curr_callstack->frames[to_frame].enter_trace = &traces[i];
 		}
 		if (!(0 <= to_frame && to_frame < 3)) {
-			fprintf(stderr, "WARNING: trace %lu to_frame=%d, adjusting\n", i, to_frame);
+			fprintf(stdwarn, "WARNING: trace %lu to_frame=%d, adjusting\n", i, to_frame);
 			to_frame = max (to_frame, 0);
 			to_frame = min (to_frame, 2);
 		}
 		if (!(0 <= from_frame && from_frame < 3)) {
-			fprintf(stderr, "WARNING: trace %lu from_frame=%d, adjusting\n", i, from_frame);
+			fprintf(stdwarn, "WARNING: trace %lu from_frame=%d, adjusting\n", i, from_frame);
 			from_frame = max (from_frame, 0);
 			from_frame = min (from_frame, 2);
 		}
@@ -1816,7 +1819,7 @@ map_file(const char *path, const void **ptr, size_t *size)
 	return fd;
 }
 
-static void
+static void __attribute__((noreturn))
 print_usage_and_die(int argc, char **argv, int retval)
 {
 	FILE *f;
@@ -1827,7 +1830,6 @@ print_usage_and_die(int argc, char **argv, int retval)
 	fprintf(f,
 		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame | kutrace]] [[--cpu | -c] cpu] [[--sysroot | -s] sysroot] [--help | -h] FILE\n",
 		argv[0]);
-		exit(EXIT_FAILURE);
 
 	exit(retval);
 }
@@ -1958,26 +1960,26 @@ main(int argc, char *argv[])
 	setbuf(stderr, NULL);
 
 	parse_options_or_die(argc, argv, &options);
+	stdwarn = options.outfmt == OUTFMT_NORMAL ? stdout : stderr;
 
 	fd = map_file(options.input, (const void **) &buf, &buf_size);
 	if (fd < 0) {
 		perror(argv[0]);
-		fprintf(stderr, "usage: %s [FILE]\n", argv[0]);
-		exit(EXIT_FAILURE);
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
 	}
 
 	file_header = (const struct owl_trace_file_header *) buf;
 	if (file_header->magic != OWL_TRACE_FILE_HEADER_MAGIC) {
-		fprintf(stderr, "Wrong file header magic\n");
-		exit(EXIT_FAILURE);
+		fprintf(stderr, "Wrong file header sentinel\n");
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
 	}
 	if (file_header->sentinel != OWL_TRACE_FILE_HEADER_SENTINEL) {
 		fprintf(stderr, "Wrong file header sentinel\n");
-		exit(EXIT_FAILURE);
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
 	}
 	if (options.cpu >= file_header->num_cpus) {
 		fprintf(stderr, "cpu not in trace\n");
-		exit(EXIT_FAILURE);
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
 	}
 
 	payload = (const uint8_t *) &file_header[1];
