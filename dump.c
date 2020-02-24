@@ -831,6 +831,118 @@ static struct printer flame_printer = {
 
 /* End FlameChart friendly output format */
 
+/* Begin KUTrace JSON format */
+
+/* Format: time dur cpu pid rpcid event arg retval ipc name */
+
+#if 0
+static void
+kutrace_print_ecall_trace(struct print_args *a, struct callstack *c)
+{
+	const char *type, *name;
+	unsigned function;
+
+	return;
+
+	describe_frame_enter(this_frame(c), &type, &name, NULL, &function);
+	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s\"],\n",
+	       ((float) rel_timestamp(a, this_frame(c)->enter_trace)) / 100000000.0f,
+	       1.0f, a->cpu, c->task->pid, 0, function, 0, 0, 0, "foobar");
+}
+#endif
+
+static void
+kutrace_print_return_trace(struct print_args *a, struct callstack *c)
+{
+	char buf[2048];
+	bool have_source_info;
+
+	/* TODO: Support hcall if we add support for it in H/W */
+	/* TODO: Print time delta */
+	const char *type;
+	uint64_t pc, offset;
+	const char *binary = "'none'";
+	/* TODO: Don't make frequency a constant */
+	const float freq = 100000000.0f;
+
+	const char *enter_type, *enter_name;
+	unsigned enter_function;
+
+	if (frame_down(c)->enter_trace == NULL || frame_down(c)->enter_trace->trace.kind == 7) {
+		return;
+	}
+
+	describe_frame_enter(frame_down(c), &enter_type, &enter_name, NULL, &enter_function);
+
+	pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
+	offset = pc;
+
+	if (frame_down(c)->enter_trace == NULL) {
+		/* Return from other task */
+		type = "scdret";
+	} else {
+		type = return_type(frame_down(c));
+	}
+	binary = binary_name(a, c, &pc, &offset);
+
+	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset);
+
+	float ts_enter =   rel_timestamp(a, frame_down(c)->enter_trace)  / freq;
+	float ts_return =  rel_timestamp(a, this_frame(c)->return_trace) / freq;
+	/* Format: time dur cpu pid rpcid event arg retval ipc name */
+	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s\"],\n",
+	       ts_enter, ts_return - ts_enter, a->cpu, c->task->pid, 0,
+	       enter_function, enter_function,
+	       this_frame(c)->return_trace->trace.ret.regval, 0, enter_name);
+}
+
+static void
+kutrace_print_invalid_trace(struct print_args *a, struct callstack *c)
+{
+	(void)c;
+	long long data;
+	unsigned kind = a->trace->trace.kind;
+	memcpy(&data, &a->trace, sizeof(data));
+	printf("INVALID TRACE kind=%u data=[%016llx]%c", kind, data, a->delim);
+}
+
+static void
+kutrace_print_sched_info(const struct owl_sched_info_full *entry,
+			 uint64_t timestamp, uint64_t until,
+			 int cpu, char delim)
+{
+	(void)delim;
+	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
+
+	if (entry->base.cpu != cpu)
+		return;
+
+	const float freq = 100000000.0f;
+	float ts_enter =   ((float) timestamp) / freq;
+	float ts_return =  ((float) until) / freq;
+
+	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s\"],\n",
+	       ts_enter, ts_return - ts_enter, cpu, entry->base.pid, 0,
+	       123, 0, 0, 0, entry->comm);
+}
+
+static printfn_t print_kutrace_trace[8] = {
+	[OWL_TRACE_KIND_UECALL]		= print_nop,
+	[OWL_TRACE_KIND_RETURN]		= kutrace_print_return_trace,
+	[OWL_TRACE_KIND_SECALL]		= print_nop,
+	[OWL_TRACE_KIND_TIMESTAMP]	= print_nop,
+	[OWL_TRACE_KIND_EXCEPTION]	= print_nop,
+	[OWL_TRACE_KIND_PCHI]		= print_nop,
+	[6]				= kutrace_print_invalid_trace,
+	[7]				= print_nop,
+};
+
+static struct printer kutrace_json_printer = {
+	.print_trace = print_kutrace_trace,
+	.print_sched = kutrace_print_sched_info
+};
+
+/* End KUTrace JSON format */
 
 int find_compare_maps(const void *_key, const void *_elem)
 {
@@ -1007,7 +1119,7 @@ populate_frame(const struct dump_trace *traces, size_t ntraces, size_t i,
 }
 
 struct options {
-	enum { OUTFMT_NORMAL, OUTFMT_FLAME } outfmt;
+	enum { OUTFMT_NORMAL, OUTFMT_FLAME, OUTFMT_KUTRACE_EVENT } outfmt;
 	bool verbose;
 	const char *input;
 	int cpu;
@@ -1474,6 +1586,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	case OUTFMT_FLAME:
 		printer = &flame_printer;
 		break;
+	case OUTFMT_KUTRACE_EVENT:
+		printer = &kutrace_json_printer;
+		break;
 	}
 
 	/* Count number of traces */
@@ -1707,7 +1822,7 @@ print_usage_and_die(int argc, char **argv, int retval)
 
 	f = retval == EXIT_SUCCESS ? stdout : stderr;
 	fprintf(f,
-		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame]] [[--cpu | -c] cpu] [[--sysroot | -s] sysroot] [--help | -h] FILE\n",
+		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame | kutrace]] [[--cpu | -c] cpu] [[--sysroot | -s] sysroot] [--help | -h] FILE\n",
 		argv[0]);
 		exit(EXIT_FAILURE);
 
@@ -1749,6 +1864,10 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 				}
 				if (!STRNCMP_LIT(optarg, "flame")) {
 					options->outfmt = OUTFMT_FLAME;
+					break;
+				}
+				if (!STRNCMP_LIT(optarg, "kutrace")) {
+					options->outfmt = OUTFMT_KUTRACE_EVENT;
 					break;
 				}
 				print_usage_and_die(argc, argv, EXIT_FAILURE);
