@@ -100,6 +100,13 @@ struct map_search_key {
 
 typedef long long unsigned int llu_t;
 typedef void (* const printfn_t)(struct print_args *, struct callstack *);
+typedef void (* const print_schedfn_t)
+	(const struct owl_sched_info_full *, uint64_t, uint64_t, int, char);
+
+struct printer {
+	printfn_t *print_trace;
+	print_schedfn_t print_sched;
+};
 
 /* Bytes */
 static size_t
@@ -611,6 +618,22 @@ print_pchi_trace(struct print_args *a, struct callstack *c)
 	       a->trace->trace.pchi.priv, a->delim);
 }
 
+void
+filtered_print_sched_info(const struct owl_sched_info_full *entry,
+			  uint64_t timestamp, uint64_t until,
+			  int cpu, char delim)
+{
+	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
+
+	if (entry->base.cpu != cpu)
+		return;
+
+	printf("@=[%020llu] cpu=%03d sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]%c",
+	       (llu_t) timestamp, (int) entry->base.cpu,
+	       entry->comm, entry->base.pid,
+	       (llu_t) until, (int) entry->base.cpu, delim);
+}
+
 static printfn_t default_print_trace[8] = {
 	[OWL_TRACE_KIND_UECALL]		= print_ecall_trace,
 	[OWL_TRACE_KIND_RETURN]		= print_return_trace,
@@ -632,6 +655,17 @@ static printfn_t default_verbose_print_trace[8] = {
 	[6]				= print_invalid_trace,
 	[7]				= print_invalid_trace,
 };
+
+static struct printer default_printer = {
+	.print_trace = default_print_trace,
+	.print_sched = filtered_print_sched_info
+};
+
+static struct printer default_verbose_printer = {
+	.print_trace = default_verbose_print_trace,
+	.print_sched = filtered_print_sched_info
+};
+
 
 /* End default output format */
 
@@ -778,23 +812,25 @@ static printfn_t real_print_flame_trace[8] = {
 	[7]				= print_nop,
 };
 
+static void
+flame_print_sched_info(const struct owl_sched_info_full *entry,
+			 uint64_t timestamp, uint64_t until,
+			 int cpu, char delim)
+{
+	(void)entry;
+	(void)timestamp;
+	(void)until;
+	(void)cpu;
+	(void)delim;
+}
+
+static struct printer flame_printer = {
+	.print_trace = print_flame_trace,
+	.print_sched = flame_print_sched_info
+};
+
 /* End FlameChart friendly output format */
 
-void
-filtered_print_sched_info(const struct owl_sched_info_full *entry,
-			  uint64_t timestamp, uint64_t until,
-			  int cpu, char delim)
-{
-	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
-
-	if (entry->base.cpu != cpu)
-		return;
-
-	printf("@=[%020llu] cpu=%03d sched\t\tcomm=[%s] pid=[%05d] until=[%020llu] cpu=[%d]%c",
-	       (llu_t) timestamp, (int) entry->base.cpu,
-	       entry->comm, entry->base.pid,
-	       (llu_t) until, (int) entry->base.cpu, delim);
-}
 
 int find_compare_maps(const void *_key, const void *_elem)
 {
@@ -1420,7 +1456,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	size_t i = 0;
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int to_frame = 0, from_frame; /* See comment about callstack/frame levels */
-	printfn_t *printfn;
+	struct printer *printer;
 	const struct owl_sched_info_full *prev_sched, *end_sched;
 	struct owl_sched_info_full *sched_info;
 	size_t ntraces, npchitraces, ntasks;
@@ -1430,12 +1466,15 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	uint32_t pchi[3] = { 0 };
 	const int cpu = options->cpu;
 
-	if (options->outfmt == OUTFMT_FLAME)
-		printfn = print_flame_trace;
-	else if (options->verbose)
-		printfn = default_verbose_print_trace;
-	else
-		printfn = default_print_trace;
+	switch (options->outfmt) {
+	default:
+		printer = options->verbose ? &default_verbose_printer :
+					     &default_printer;
+		break;
+	case OUTFMT_FLAME:
+		printer = &flame_printer;
+		break;
+	}
 
 	/* Count number of traces */
 	count_traces(tracebuf, tracebuf_size, &ntraces, &npchitraces);
@@ -1479,11 +1518,9 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	prev_sched = traces[0].sched_info;
 	curr_callstack = find_callstack(prev_sched, callstacks, ntasks);
 	/* Print first scheduled task */
-	if (options->outfmt != OUTFMT_FLAME)
-		filtered_print_sched_info(traces[0].sched_info,
-					  0,
-					  traces[0].sched_info->base.timestamp - traces[0].timestamp,
-					  cpu, '\n');
+	printer->print_sched(traces[0].sched_info, 0,
+			     traces[0].sched_info->base.timestamp - traces[0].timestamp,
+			     cpu, '\n');
 
 	for (i = 0; i < ntraces; i++) {
 		bool task_switch = i && (prev_sched != traces[i].sched_info);
@@ -1493,31 +1530,29 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				find_callstack(traces[i].sched_info, callstacks,
 					       ntasks);
 			assert(traces[i].sched_info != NULL);
-			if (options->outfmt != OUTFMT_FLAME) {
-				/*
-				 * Print scheduled tasks that didn't generate
-				 * traces.
-				 * TODO: This should be done for FLAME too.
-				 */
-				while (prev_sched != traces[i - 1].sched_info) {
-					const struct owl_sched_info_full *next_sched;
-					next_sched = prev_sched;
-					while (++next_sched < end_sched) {
-						if (next_sched->base.cpu == cpu)
-							break;
-					}
-					filtered_print_sched_info(
-						prev_sched,
-						prev_sched->base.timestamp - traces[0].timestamp,
-						next_sched->base.timestamp - traces[0].timestamp,
-						cpu, '\n');
-					prev_sched++;
-				}
-				filtered_print_sched_info(traces[i].sched_info,
-							  prev_sched->base.timestamp - traces[0].timestamp,
-							  traces[i].sched_info->base.timestamp - traces[0].timestamp,
-							  cpu, '\n');
+			/*
+			* Print scheduled tasks that didn't generate
+			* traces.
+			* TODO: This should be done for FLAME too.
+			*/
+			while (prev_sched != traces[i - 1].sched_info) {
+				const struct owl_sched_info_full *next_sched;
+				next_sched = prev_sched;
+				while (++next_sched < end_sched) {
+					if (next_sched->base.cpu == cpu)
+						break;
 			}
+			printer->print_sched(
+				prev_sched,
+				prev_sched->base.timestamp - traces[0].timestamp,
+				next_sched->base.timestamp - traces[0].timestamp,
+				cpu, '\n');
+				prev_sched++;
+			}
+			printer->print_sched(traces[i].sched_info,
+					prev_sched->base.timestamp - traces[0].timestamp,
+					traces[i].sched_info->base.timestamp - traces[0].timestamp,
+					cpu, '\n');
 		}
 		prev_sched = traces[i].sched_info;
 
@@ -1594,7 +1629,7 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.sysroot		= options->sysroot ?: DEFAULT_SYSROOT,
 				.cpu			= options->cpu
 			};
-			printfn[traces[i].trace.kind](&args, curr_callstack);
+			printer->print_trace[traces[i].trace.kind](&args, curr_callstack);
 		}
 
 		if (traces[i].trace.kind == OWL_TRACE_KIND_RETURN) {
@@ -1610,29 +1645,27 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	 * was disabled.
 	 * TODO: This should be done for FLAME too.
 	 */
-	if (options->outfmt != OUTFMT_FLAME) {
-		const struct owl_sched_info_full *next_sched;
-		while (++prev_sched < end_sched - 1) {
-			next_sched = prev_sched;
-			while (++next_sched < end_sched) {
-				if (next_sched == end_sched)
-					break;
-				if (next_sched->base.cpu == cpu)
-					break;
-			}
+	const struct owl_sched_info_full *next_sched;
+	while (++prev_sched < end_sched - 1) {
+		next_sched = prev_sched;
+		while (++next_sched < end_sched) {
 			if (next_sched == end_sched)
 				break;
-			filtered_print_sched_info(prev_sched,
-						  prev_sched->base.timestamp - traces[0].timestamp,
-						  next_sched->base.timestamp - traces[0].timestamp,
-						  cpu, '\n');
+			if (next_sched->base.cpu == cpu)
+				break;
 		}
-		/* Last sched info entry doesn't have a end time, fake it. */
-		filtered_print_sched_info(prev_sched,
-					  prev_sched->base.timestamp - traces[0].timestamp,
-					  9999999999999999999ULL,
-					  cpu, '\n');
+		if (next_sched == end_sched)
+			break;
+		printer->print_sched(prev_sched,
+				prev_sched->base.timestamp - traces[0].timestamp,
+				next_sched->base.timestamp - traces[0].timestamp,
+				cpu, '\n');
 	}
+	/* Fake end time for last sched info entry. */
+	printer->print_sched(prev_sched,
+			prev_sched->base.timestamp - traces[0].timestamp,
+			prev_sched->base.timestamp - traces[0].timestamp + 1,
+			cpu, '\n');
 
 	free(traces);
 	free(sched_info);
@@ -1836,7 +1869,7 @@ main(int argc, char *argv[])
 		   (payload + file_header->map_info_offs);
 	map_info_size = file_header->map_info_size;
 
-	if (options.verbose && options.outfmt != OUTFMT_FLAME) {
+	if (options.verbose && options.outfmt == OUTFMT_NORMAL) {
 		print_file_header(file_header);
 		print_stream_info(stream_info, file_header->stream_info_size);
 	}
