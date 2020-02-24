@@ -51,7 +51,7 @@ do {								\
 
 #define STRNCMP_LIT(s, lit) strncmp((s), ""lit"", sizeof((lit)-1))
 
-void *source_info_hashmap;
+static void *source_info_hashmap;
 
 /* A preprocessed trace with context */
 struct dump_trace {
@@ -165,11 +165,11 @@ timestamp_trace_to_clocks(union owl_trace curr, union owl_trace prev,
 
 /* Begin print helper functions */
 
-struct owl_map_info *find_map(const struct map_search_key *key,
-			      const struct owl_map_info *maps,
-			      size_t num_map_entries);
+static struct owl_map_info *find_map(const struct map_search_key *key,
+				     const struct owl_map_info *maps,
+				     size_t num_map_entries);
 
-uint32_t
+static uint32_t
 sign_extend_pchi(uint32_t pchi, unsigned pc_bits)
 {
 	unsigned sign_bits = pc_bits - 32;
@@ -180,7 +180,7 @@ sign_extend_pchi(uint32_t pchi, unsigned pc_bits)
 	return pchi;
 }
 
-uint64_t
+static uint64_t
 full_pc(struct call_frame *frame, unsigned pc_bits,
 	bool sign_extend)
 {
@@ -226,7 +226,7 @@ frame_up(struct callstack *c)
 	return &c->frames[c->frameno - 1];
 }
 
-const char *
+static const char *
 return_type(struct call_frame *frame)
 {
 	if (frame->enter_trace == NULL || frame->enter_trace->trace.kind == 7) {
@@ -249,7 +249,7 @@ return_type(struct call_frame *frame)
 	}
 }
 
-const char *
+static const char *
 binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 	    uint64_t *offset)
 {
@@ -296,7 +296,7 @@ binary_name(struct print_args *a, struct callstack *c, uint64_t *pc,
 	return binary;
 }
 
-void
+static void
 describe_exception_frame(struct call_frame *frame, const char **type,
 			 const char **name, const char **desc, unsigned *cause)
 {
@@ -361,7 +361,7 @@ describe_exception_frame(struct call_frame *frame, const char **type,
 	*name = *name ? : "???";
 }
 
-void
+static void
 describe_frame_enter(struct call_frame *frame, const char **type,
 		     const char **name, const char **desc, unsigned *cause)
 {
@@ -618,7 +618,7 @@ print_pchi_trace(struct print_args *a, struct callstack *c)
 	       a->trace->trace.pchi.priv, a->delim);
 }
 
-void
+static void
 filtered_print_sched_info(const struct owl_sched_info_full *entry,
 			  uint64_t timestamp, uint64_t until,
 			  int cpu, char delim)
@@ -944,7 +944,8 @@ static struct printer kutrace_json_printer = {
 
 /* End KUTrace JSON format */
 
-int find_compare_maps(const void *_key, const void *_elem)
+static int
+find_compare_maps(const void *_key, const void *_elem)
 {
 	const struct map_search_key *key = _key;
 	const struct owl_map_info *elem = _elem;
@@ -962,7 +963,7 @@ int find_compare_maps(const void *_key, const void *_elem)
 	return 0;
 }
 
-struct owl_map_info *
+static struct owl_map_info *
 find_map(const struct map_search_key *key,
 	 const struct owl_map_info *maps, size_t num_map_entries)
 {
@@ -970,7 +971,7 @@ find_map(const struct map_search_key *key,
 		       find_compare_maps);
 }
 
-int
+static int
 sort_compare_maps(const void *_a, const void *_b)
 {
 	const struct owl_map_info *a = _a;
@@ -994,7 +995,7 @@ sort_compare_maps(const void *_a, const void *_b)
 	return 0;
 }
 
-void
+static void
 sort_maps(struct owl_map_info *maps, size_t num_map_entries)
 {
 	qsort(maps, num_map_entries, sizeof(*maps), sort_compare_maps);
@@ -1280,7 +1281,7 @@ fill_in_missing_comms(struct owl_sched_info_full *sched_info,
 	}
 }
 
-struct owl_sched_info_full *
+static struct owl_sched_info_full *
 unpack_sched_info(const uint8_t *sched_info_buf, size_t sched_info_size,
 		  size_t sched_info_entries)
 {
@@ -1305,7 +1306,6 @@ unpack_sched_info(const uint8_t *sched_info_buf, size_t sched_info_size,
 
 	return sched_info;
 }
-
 
 static void
 create_tasks(struct owl_task *tasks, size_t ntasks,
@@ -1444,6 +1444,7 @@ const struct dump_trace default_enter2 = {
 	.timestamp = ~0,
 	.trace.kind = 7
 };
+
 static void
 init_callstacks(struct callstack *callstacks, struct owl_task *tasks,
 		size_t ntasks)
@@ -1558,11 +1559,12 @@ compute_initial_frame_level(struct dump_trace *traces, size_t *ntraces)
 	return start_frame;
 }
 
-void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
-		const uint8_t *sched_info_buf, size_t sched_info_size,
-		size_t sched_info_entries,
-		struct owl_map_info *maps, size_t map_info_size,
-		struct options *options)
+static void
+dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
+	   const uint8_t *sched_info_buf, size_t sched_info_size,
+	   size_t sched_info_entries,
+	   struct owl_map_info *maps, size_t map_info_size,
+	   struct options *options)
 {
 
 	size_t i = 0;
@@ -1789,7 +1791,8 @@ void dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	free(callstacks);
 }
 
-int map_file(const char *path, const void **ptr, size_t *size)
+static int
+map_file(const char *path, const void **ptr, size_t *size)
 {
 	const void *mem;
 	int fd, err;
@@ -1813,7 +1816,7 @@ int map_file(const char *path, const void **ptr, size_t *size)
 	return fd;
 }
 
-void
+static void
 print_usage_and_die(int argc, char **argv, int retval)
 {
 	FILE *f;
@@ -1829,7 +1832,7 @@ print_usage_and_die(int argc, char **argv, int retval)
 	exit(retval);
 }
 
-void
+static void
 parse_options_or_die(int argc, char **argv, struct options *options)
 {
 	int c;
@@ -1903,7 +1906,8 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 		print_usage_and_die(argc, argv, EXIT_FAILURE);
 }
 
-void print_file_header(const struct owl_trace_file_header *fh)
+static void
+print_file_header(const struct owl_trace_file_header *fh)
 {
 	printf("FILE HEADER\n");
 	printf("magic:\t\t\t%lx\n", fh->magic);
@@ -1922,7 +1926,8 @@ void print_file_header(const struct owl_trace_file_header *fh)
 	printf("==================================================\n");
 }
 
-void print_stream_info(const struct owl_stream_info *si, uint64_t size)
+static void
+print_stream_info(const struct owl_stream_info *si, uint64_t size)
 {
 	printf("TRACE STREAMS\n");
 	while (si && size) {
