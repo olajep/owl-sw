@@ -1200,6 +1200,7 @@ struct options {
 	enum { OUTFMT_NORMAL, OUTFMT_FLAME, OUTFMT_KUTRACE_EVENT } outfmt;
 	bool verbose;
 	const char *input;
+	bool have_cpu;
 	int cpu;
 	const char *sysroot;
 };
@@ -1642,14 +1643,12 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	   const uint8_t *sched_info_buf, size_t sched_info_size,
 	   size_t sched_info_entries,
 	   struct owl_map_info *maps, size_t map_info_size,
-	   struct options *options,
-	   const struct owl_trace_file_header *file_header)
+	   struct options *options, struct printer *printer, const int cpu)
 {
 
 	size_t i = 0;
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int to_frame = 0, from_frame; /* See comment about callstack/frame levels */
-	struct printer *printer;
 	const struct owl_sched_info_full *prev_sched, *end_sched;
 	struct owl_sched_info_full *sched_info;
 	size_t ntraces, npchitraces, ntasks;
@@ -1657,20 +1656,6 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	struct owl_task *tasks;
 	struct callstack *callstacks, *curr_callstack;
 	uint32_t pchi[3] = { 0 };
-	const int cpu = options->cpu;
-
-	switch (options->outfmt) {
-	default:
-		printer = options->verbose ? &default_verbose_printer :
-					     &default_printer;
-		break;
-	case OUTFMT_FLAME:
-		printer = &flame_printer;
-		break;
-	case OUTFMT_KUTRACE_EVENT:
-		printer = &kutrace_json_printer;
-		break;
-	}
 
 	/* Count number of traces */
 	count_traces(tracebuf, tracebuf_size, &ntraces, &npchitraces);
@@ -1713,9 +1698,6 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 
 	prev_sched = traces[0].sched_info;
 	curr_callstack = find_callstack(prev_sched, callstacks, ntasks);
-
-	if (printer->print_prologue)
-		printer->print_prologue(file_header);
 
 	/* Print first scheduled task */
 	printer->print_sched(traces[0].sched_info, 0,
@@ -1825,7 +1807,7 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.delim			= '\n',
 				.start_time		= traces[0].timestamp,
 				.sysroot		= options->sysroot ?: DEFAULT_SYSROOT,
-				.cpu			= options->cpu
+				.cpu			= cpu
 			};
 			printer->print_trace[traces[i].trace.kind](&args, curr_callstack);
 		}
@@ -1864,9 +1846,6 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			prev_sched->base.timestamp - traces[0].timestamp,
 			prev_sched->base.timestamp - traces[0].timestamp + 1,
 			cpu, '\n');
-
-	if (printer->print_epilogue)
-		printer->print_epilogue(file_header);
 
 	free(traces);
 	free(sched_info);
@@ -1959,6 +1938,7 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 				print_usage_and_die(argc, argv, EXIT_FAILURE);
 				break;
 			case 'c':
+				options->have_cpu = true;
 				options->cpu = (int) strtol(optarg, NULL, 0);
 				break;
 			case 's':
@@ -2035,6 +2015,7 @@ main(int argc, char *argv[])
 	size_t buf_size, tracebuf_size, sched_info_size, sched_info_entries;
 	size_t map_info_size;
 	struct options options = { 0 };
+	struct printer *printer;
 
 	/* Disable line buffering */
 	setbuf(stdout, NULL);
@@ -2056,6 +2037,10 @@ main(int argc, char *argv[])
 	}
 	if (file_header->sentinel != OWL_TRACE_FILE_HEADER_SENTINEL) {
 		fprintf(stderr, "Wrong file header sentinel\n");
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
+	}
+	if (file_header->num_cpus < 1) {
+		fprintf(stderr, "No CPU streams in file header\n");
 		print_usage_and_die(argc, argv, EXIT_FAILURE);
 	}
 	if (options.cpu >= file_header->num_cpus) {
@@ -2081,17 +2066,48 @@ main(int argc, char *argv[])
 		print_stream_info(stream_info, file_header->stream_info_size);
 	}
 
+	switch (options.outfmt) {
+	default:
+		printer = options.verbose ? &default_verbose_printer :
+					    &default_printer;
+		break;
+	case OUTFMT_FLAME:
+		printer = &flame_printer;
+		break;
+	case OUTFMT_KUTRACE_EVENT:
+		printer = &kutrace_json_printer;
+		break;
+	}
+
+	if (printer->print_prologue)
+		printer->print_prologue(file_header);
+
 	source_info_hashmap = source_hash_init();
 	{
 		(void)tracebuf_size;
-		const struct owl_stream_info
-			*cpu_si = &stream_info[options.cpu];
-		dump_trace(&tracebuf[cpu_si->offs], cpu_si->size,
-			   sched_info_buf, sched_info_size, sched_info_entries,
-			   map_info, map_info_size,
-			   &options, file_header);
+		int cpu_start, cpu_end, cpu;
+
+		if (options.have_cpu) {
+			cpu_start = options.cpu;
+			cpu_end = options.cpu + 1;
+		} else {
+			cpu_start = 0;
+			cpu_end = file_header->num_cpus;
+		}
+
+		for (cpu = cpu_start; cpu < cpu_end; cpu++) {
+			const struct owl_stream_info
+				*cpu_si = &stream_info[cpu];
+			dump_trace(&tracebuf[cpu_si->offs], cpu_si->size,
+				   sched_info_buf, sched_info_size,
+				   sched_info_entries, map_info, map_info_size,
+				   &options, printer, cpu);
+		}
 	}
 	source_hash_fini(source_info_hashmap);
+
+	if (printer->print_epilogue)
+		printer->print_epilogue(file_header);
 
 	munmap((void *) buf, buf_size);
 	close(fd);
