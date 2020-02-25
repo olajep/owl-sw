@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <getopt.h>
+#include <time.h>
 
 #if 0
 /* When things stabilize and we can move it to the sysroot */
@@ -106,10 +107,16 @@ typedef long long unsigned int llu_t;
 typedef void (* const printfn_t)(struct print_args *, struct callstack *);
 typedef void (* const print_schedfn_t)
 	(const struct owl_sched_info_full *, uint64_t, uint64_t, int, char);
+typedef void (* const print_prologuefn_t)
+	(const struct owl_trace_file_header *file_header);
+typedef void (* const print_epiloguefn_t)
+	(const struct owl_trace_file_header *file_header);
 
 struct printer {
-	printfn_t *print_trace;
-	print_schedfn_t print_sched;
+	printfn_t		*print_trace;
+	print_schedfn_t		print_sched;
+	print_prologuefn_t	print_prologue;
+	print_epiloguefn_t	print_epilogue;
 };
 
 /* Bytes */
@@ -891,6 +898,25 @@ kutrace_print_return_trace(struct print_args *a, struct callstack *c)
 
 	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset);
 
+	switch (frame_down(c)->enter_trace->trace.kind) {
+	case OWL_TRACE_KIND_UECALL:
+		enter_function |= 0x800;
+		break;
+	case OWL_TRACE_KIND_SECALL:
+		enter_function |= 0x000; /* is_kernel ??? */
+		break;
+	case OWL_TRACE_KIND_EXCEPTION:
+		if (frame_down(c)->enter_trace->trace.exception.cause & 128) {
+			enter_function |= 0x500; /* is_irq */
+			enter_function &= ~128;
+		} else {
+			enter_function |= 0x400; /* is_fault */
+		}
+		break;
+	default:
+		break;
+	}
+
 	float ts_enter =   rel_timestamp(a, frame_down(c)->enter_trace)  / freq;
 	float ts_return =  rel_timestamp(a, this_frame(c)->return_trace) / freq;
 	/* Format: time dur cpu pid rpcid event arg retval ipc name */
@@ -916,6 +942,8 @@ kutrace_print_sched_info(const struct owl_sched_info_full *entry,
 			 int cpu, char delim)
 {
 	(void)delim;
+
+	int event;
 	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
 
 	if (entry->base.cpu != cpu)
@@ -925,9 +953,52 @@ kutrace_print_sched_info(const struct owl_sched_info_full *entry,
 	float ts_enter =   ((float) timestamp) / freq;
 	float ts_return =  ((float) until) / freq;
 
-	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s\"],\n",
+	event = 0x10000 | entry->base.pid;
+
+	/* Format: time dur cpu pid rpcid event arg retval ipc name */
+	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s/%d\"],\n",
 	       ts_enter, ts_return - ts_enter, cpu, entry->base.pid, 0,
-	       123, 0, 0, 0, entry->comm);
+	       event, 0, 0, 0, entry->comm, entry->base.pid);
+}
+
+static void
+kutrace_print_prologue(const struct owl_trace_file_header *file_header)
+{
+	time_t start_seconds, stop_seconds;
+	struct tm *start_tm, *stop_tm;
+	char start_str[128] = { 0 }, stop_str[128] = { 0 };
+
+	start_seconds = file_header->start_time / 1000000000L;
+	start_tm = gmtime(&start_seconds);
+	strftime(start_str, sizeof(start_str), "%Y-%m-%d_%H:%M:%S", start_tm);
+
+	stop_seconds = file_header->stop_time / 1000000000L;
+	stop_tm = gmtime(&stop_seconds);
+	strftime(stop_str, sizeof(stop_str), "%Y-%m-%d_%H:%M:%S", stop_tm);
+
+	printf(\
+"{\n"
+"\"axisLabelX\" : \"Time (sec)\",\n"
+"\"axisLabelY\" : \"CPU Number\",\n"
+"\"Comment\" : \"CSTrace KUTrace compatible JSON V0\",\n"
+"\"flags\" : 0,\n"
+"\"shortMulX\" : 1,\n"
+"\"shortUnitsX\" : \"s\",\n"
+"\"thousandsX\" : 1000,\n"
+"\"title\" : \"Host: %s\",\n"
+"\"tracebase\" : \"%s\",\n"
+"\"traceend\" : \"%s\",\n"
+"\"version\" : 0,\n"
+"\"events\" : [\n",
+	file_header->hostname, start_str, stop_str);
+}
+
+static void
+kutrace_print_epilogue(const struct owl_trace_file_header *file_header)
+{
+	printf("\
+[999.0, 0.0, 0, 0, 0, 0, 0, 0, 0, \"\"]\n\
+]}\n");
 }
 
 static printfn_t print_kutrace_trace[8] = {
@@ -942,8 +1013,10 @@ static printfn_t print_kutrace_trace[8] = {
 };
 
 static struct printer kutrace_json_printer = {
-	.print_trace = print_kutrace_trace,
-	.print_sched = kutrace_print_sched_info
+	.print_trace	= print_kutrace_trace,
+	.print_sched	= kutrace_print_sched_info,
+	.print_prologue	= kutrace_print_prologue,
+	.print_epilogue	= kutrace_print_epilogue
 };
 
 /* End KUTrace JSON format */
@@ -1569,7 +1642,8 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	   const uint8_t *sched_info_buf, size_t sched_info_size,
 	   size_t sched_info_entries,
 	   struct owl_map_info *maps, size_t map_info_size,
-	   struct options *options)
+	   struct options *options,
+	   const struct owl_trace_file_header *file_header)
 {
 
 	size_t i = 0;
@@ -1639,6 +1713,10 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 
 	prev_sched = traces[0].sched_info;
 	curr_callstack = find_callstack(prev_sched, callstacks, ntasks);
+
+	if (printer->print_prologue)
+		printer->print_prologue(file_header);
+
 	/* Print first scheduled task */
 	printer->print_sched(traces[0].sched_info, 0,
 			     traces[0].sched_info->base.timestamp - traces[0].timestamp,
@@ -1786,6 +1864,9 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			prev_sched->base.timestamp - traces[0].timestamp,
 			prev_sched->base.timestamp - traces[0].timestamp + 1,
 			cpu, '\n');
+
+	if (printer->print_epilogue)
+		printer->print_epilogue(file_header);
 
 	free(traces);
 	free(sched_info);
@@ -2008,7 +2089,7 @@ main(int argc, char *argv[])
 		dump_trace(&tracebuf[cpu_si->offs], cpu_si->size,
 			   sched_info_buf, sched_info_size, sched_info_entries,
 			   map_info, map_info_size,
-			   &options);
+			   &options, file_header);
 	}
 	source_hash_fini(source_info_hashmap);
 
