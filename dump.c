@@ -646,6 +646,20 @@ filtered_print_sched_info(const struct owl_sched_info_full *entry,
 	       (llu_t) until, (int) entry->base.cpu, delim);
 }
 
+static void print_file_header(const struct owl_trace_file_header *fh);
+static void print_stream_info(const struct owl_stream_info *si, uint64_t size);
+static void
+default_verbose_print_prologue(const struct owl_trace_file_header *fh)
+{
+	const struct owl_stream_info *stream_info;
+
+	stream_info = (const struct owl_stream_info *)
+		(((uintptr_t) &fh[1]) + fh->stream_info_offs);
+
+	print_file_header(fh);
+	print_stream_info(stream_info, fh->stream_info_size);
+}
+
 static printfn_t default_print_trace[8] = {
 	[OWL_TRACE_KIND_UECALL]		= print_ecall_trace,
 	[OWL_TRACE_KIND_RETURN]		= print_return_trace,
@@ -675,7 +689,8 @@ static struct printer default_printer = {
 
 static struct printer default_verbose_printer = {
 	.print_trace = default_verbose_print_trace,
-	.print_sched = filtered_print_sched_info
+	.print_sched = filtered_print_sched_info,
+	.print_prologue = default_verbose_print_prologue
 };
 
 
@@ -2126,11 +2141,6 @@ main(int argc, char *argv[])
 	map_info = (struct owl_map_info *)
 		   (payload + file_header->map_info_offs);
 	map_info_size = file_header->map_info_size;
-
-	if (options.verbose && options.outfmt == OUTFMT_NORMAL) {
-		print_file_header(file_header);
-		print_stream_info(stream_info, file_header->stream_info_size);
-	}
 
 	switch (options.outfmt) {
 	default:
