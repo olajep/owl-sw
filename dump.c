@@ -1643,7 +1643,7 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 	   const uint8_t *sched_info_buf, size_t sched_info_size,
 	   size_t sched_info_entries,
 	   struct owl_map_info *maps, size_t map_info_size,
-	   struct options *options, struct printer *printer, const int cpu)
+	   const char *sysroot, struct printer *printer, const int cpu)
 {
 
 	size_t i = 0;
@@ -1806,7 +1806,7 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 				.sign_extend_pc		= true,
 				.delim			= '\n',
 				.start_time		= traces[0].timestamp,
-				.sysroot		= options->sysroot ?: DEFAULT_SYSROOT,
+				.sysroot		= sysroot,
 				.cpu			= cpu
 			};
 			printer->print_trace[traces[i].trace.kind](&args, curr_callstack);
@@ -2089,6 +2089,7 @@ main(int argc, char *argv[])
 	{
 		(void)tracebuf_size;
 		int cpu_start, cpu_end, cpu;
+		const char *sysroot = options.sysroot ?: DEFAULT_SYSROOT;
 
 		if (options.have_cpu) {
 			cpu_start = options.cpu;
@@ -2104,7 +2105,7 @@ main(int argc, char *argv[])
 			dump_trace(&tracebuf[cpu_si->offs], cpu_si->size,
 				   sched_info_buf, sched_info_size,
 				   sched_info_entries, map_info, map_info_size,
-				   &options, printer, cpu);
+				   sysroot, printer, cpu);
 		}
 	}
 	source_hash_fini(source_info_hashmap);
