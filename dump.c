@@ -844,23 +844,33 @@ static struct printer flame_printer = {
 
 /* Begin KUTrace JSON format */
 
-/* Format: time dur cpu pid rpcid event arg retval ipc name */
-
-#if 0
 static void
 kutrace_print_ecall_trace(struct print_args *a, struct callstack *c)
 {
-	const char *type, *name;
 	unsigned function;
+	float ts_enter, ts_return;
+	bool exit_p;
+	const char *enter_type = NULL, *enter_name = NULL;
+	int exit_event = 0x20000;
+	const float freq = 100000000.0f;
 
-	return;
+	describe_frame_enter(this_frame(c), &enter_type, &enter_name, NULL, &function);
 
-	describe_frame_enter(this_frame(c), &type, &name, NULL, &function);
-	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s\"],\n",
-	       ((float) rel_timestamp(a, this_frame(c)->enter_trace)) / 100000000.0f,
-	       1.0f, a->cpu, c->task->pid, 0, function, 0, 0, 0, "foobar");
+	ts_enter = rel_timestamp(a, this_frame(c)->enter_trace) / freq;
+	/* TODO: What should this be? Next sched??? */
+	ts_return = 0.001f;
+
+	exit_p = this_frame(c)->enter_trace->trace.kind == OWL_TRACE_KIND_UECALL &&
+		 (function == tgt_sys_exit || function == tgt_sys_exit_group);
+	if (!exit_p)
+		return;
+
+	/* Format: time dur cpu pid rpcid event arg retval ipc name */
+	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %u, %d, \"%s\"],\n",
+	       ts_enter, ts_return, a->cpu, c->task->pid, 0,
+	       exit_event, exit_event,
+	       function, 0, enter_name);
 }
-#endif
 
 static void
 kutrace_print_return_trace(struct print_args *a, struct callstack *c)
@@ -1002,7 +1012,7 @@ kutrace_print_epilogue(const struct owl_trace_file_header *file_header)
 }
 
 static printfn_t print_kutrace_trace[8] = {
-	[OWL_TRACE_KIND_UECALL]		= print_nop,
+	[OWL_TRACE_KIND_UECALL]		= kutrace_print_ecall_trace,
 	[OWL_TRACE_KIND_RETURN]		= kutrace_print_return_trace,
 	[OWL_TRACE_KIND_SECALL]		= print_nop,
 	[OWL_TRACE_KIND_TIMESTAMP]	= print_nop,
