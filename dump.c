@@ -392,7 +392,8 @@ describe_frame_enter(struct call_frame *frame, const char **type,
 		*desc = "ecall";
 		*cause = frame->enter_trace->trace.ecall.regval;
 		if (*cause >= ARRAY_SIZE(syscalltable)) {
-			*name = NULL;
+			fprintf(stdwarn, "WARNING: invalid syscall %d\n", *cause);
+			*name = "sys_INVALID";
 		} else {
 			*name = syscalltable[*cause];
 		}
