@@ -1370,17 +1370,13 @@ fill_in_missing_comms(struct owl_sched_info_full *sched_info,
 	}
 }
 
-static struct owl_sched_info_full *
-unpack_sched_info(const uint8_t *sched_info_buf, size_t sched_info_size,
+static void
+unpack_sched_info(struct owl_sched_info_full *sched_info,
+		  const uint8_t *sched_info_buf, size_t sched_info_size,
 		  size_t sched_info_entries)
 {
 	size_t i, offs, entry_size;
-	struct owl_sched_info_full *sched_info;
 	const struct owl_sched_info *entry;
-
-	sched_info	= calloc(sched_info_entries, sizeof(*sched_info));
-	if (sched_info == NULL)
-		return NULL;
 
 	for (i = 0, offs = 0;
 	     i < sched_info_entries && offs < sched_info_size;
@@ -1392,8 +1388,6 @@ unpack_sched_info(const uint8_t *sched_info_buf, size_t sched_info_size,
 		memcpy(&sched_info[i], &sched_info_buf[offs], entry_size);
 	}
 	fill_in_missing_comms(sched_info, sched_info_entries);
-
-	return sched_info;
 }
 
 static void
@@ -1650,53 +1644,37 @@ compute_initial_frame_level(struct dump_trace *traces, size_t *ntraces)
 }
 
 static void
-dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
-	   const uint8_t *sched_info_buf, size_t sched_info_size,
-	   size_t sched_info_entries,
-	   struct owl_map_info *maps, size_t map_info_size,
-	   const char *sysroot, struct printer *printer, const int cpu)
+dump_trace_one_cpu(const uint8_t *trace_stream, size_t trace_stream_size,
+		   const struct owl_sched_info_full *sched_info,
+		   size_t sched_info_entries,
+		   struct callstack *callstacks, const size_t ntasks,
+		   struct owl_map_info *maps, size_t map_info_size,
+		   const char *sysroot, struct printer *printer, const int cpu)
 {
 
 	size_t i = 0;
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int to_frame = 0, from_frame; /* See comment about callstack/frame levels */
 	const struct owl_sched_info_full *prev_sched, *end_sched;
-	struct owl_sched_info_full *sched_info;
-	size_t ntraces, npchitraces, ntasks;
+	size_t ntraces, npchitraces;
 	struct dump_trace *traces, **pchi_traces;
-	struct owl_task *tasks;
-	struct callstack *callstacks, *curr_callstack;
+	struct callstack *curr_callstack;
 	uint32_t pchi[3] = { 0 };
 
-	/* Count number of traces */
-	count_traces(tracebuf, tracebuf_size, &ntraces, &npchitraces);
-
-	/* Unpack scheduling info to full format */
-	sched_info = unpack_sched_info(sched_info_buf, sched_info_size,
-				       sched_info_entries);
-	assert(sched_info != NULL);
 	end_sched = &sched_info[sched_info_entries];
 
-	/* Count number of unique tasks */
-	ntasks = unique_tasks(sched_info, sched_info_entries);
-	if (!ntraces || !ntasks)
+	/* Count number of traces */
+	count_traces(trace_stream, trace_stream_size, &ntraces, &npchitraces);
+	if (!ntraces)
 		return;
+
 	traces = calloc(ntraces, sizeof(*traces));
 	pchi_traces = calloc(npchitraces, sizeof(*pchi_traces));
-	tasks = calloc(ntasks, sizeof(*tasks));
-	callstacks = calloc(ntasks, sizeof(*callstacks));
-	assert(tasks != NULL && traces != NULL && callstacks != NULL &&
-	       pchi_traces != NULL);
 
-	preprocess_traces(traces, tracebuf, tracebuf_size, ntraces,
+	assert(traces != NULL && pchi_traces != NULL);
+
+	preprocess_traces(traces, trace_stream, trace_stream_size, ntraces,
 			  sched_info, sched_info_entries, pchi_traces, cpu);
-
-	create_tasks(tasks, ntasks, sched_info, sched_info_entries);
-
-	init_callstacks(callstacks, tasks, ntasks);
-
-	/* Sort the map info so we can binary search it */
-	sort_maps(maps, num_map_entries);
 
 	/* Callstack/frame levels:
 	 * 0: ecall <--> 1: mcall <--> 2: (interrupt or exception) */
@@ -1859,10 +1837,79 @@ dump_trace(const uint8_t *tracebuf, size_t tracebuf_size,
 			cpu, '\n');
 
 	free(traces);
-	free(sched_info);
 	free(pchi_traces);
-	free(tasks);
+}
+
+static void
+dump_trace(const struct owl_trace_file_header *file_header,
+	   const uint8_t *tracebuf,
+	   const uint8_t *sched_info_buf, size_t sched_info_size,
+	   size_t sched_info_entries,
+	   const struct owl_stream_info *stream_info,
+	   struct owl_map_info *map_info, size_t map_info_size,
+	   struct options *options, struct printer *printer)
+{
+	const char *sysroot = options->sysroot ?: DEFAULT_SYSROOT;
+	int cpu_start, cpu_end, cpu;
+	struct owl_sched_info_full *sched_info;
+	size_t ntasks;
+	struct owl_task *tasks;
+	struct callstack *callstacks;
+	const size_t num_map_entries = map_info_size / sizeof(*map_info);
+
+	/* Unpack scheduling info to full format */
+	if (!sched_info_entries)
+		return;
+	sched_info = calloc(sched_info_entries, sizeof(*sched_info));
+	assert(sched_info != NULL);
+	unpack_sched_info(sched_info, sched_info_buf, sched_info_size,
+			  sched_info_entries);
+
+	/* Count number of unique tasks */
+	ntasks = unique_tasks(sched_info, sched_info_entries);
+	if (!ntasks)
+		goto out_free_sched_info;
+
+	tasks = calloc(ntasks, sizeof(*tasks));
+	callstacks = calloc(ntasks, sizeof(*callstacks));
+
+	assert(tasks != NULL && callstacks != NULL);
+
+	create_tasks(tasks, ntasks, sched_info, sched_info_entries);
+	init_callstacks(callstacks, tasks, ntasks);
+
+	/* Sort the map info so we can binary search it */
+	sort_maps(map_info, num_map_entries);
+
+	source_info_hashmap = source_hash_init();
+
+	/* Set core range to dump (all or one) */
+	if (options->have_cpu) {
+		cpu_start = options->cpu;
+		cpu_end = options->cpu + 1;
+	} else {
+		cpu_start = 0;
+		cpu_end = file_header->num_cpus;
+	}
+	/* Dump */
+	for (cpu = cpu_start; cpu < cpu_end; cpu++) {
+		const struct owl_stream_info *cpu_si = &stream_info[cpu];
+		const uint8_t *trace_stream = &tracebuf[cpu_si->offs];
+		const size_t trace_stream_size = cpu_si->size;
+
+		dump_trace_one_cpu(trace_stream, trace_stream_size,
+				   sched_info, sched_info_entries,
+				   callstacks, ntasks,
+				   map_info, map_info_size,
+				   sysroot, printer, cpu);
+	}
+
+	source_hash_fini(source_info_hashmap);
+
 	free(callstacks);
+	free(tasks);
+out_free_sched_info:
+	free(sched_info);
 }
 
 static int
@@ -2026,7 +2073,7 @@ main(int argc, char *argv[])
 	const struct owl_stream_info *stream_info;
 	struct owl_map_info *map_info;
 	int fd;
-	size_t buf_size, tracebuf_size, sched_info_size, sched_info_entries;
+	size_t buf_size, sched_info_size, sched_info_entries;
 	size_t map_info_size;
 	struct options options = { 0 };
 	struct printer *printer;
@@ -2062,11 +2109,16 @@ main(int argc, char *argv[])
 		print_usage_and_die(argc, argv, EXIT_FAILURE);
 	}
 
+	if (file_header->stream_info_size <
+	    sizeof(struct owl_stream_info) * file_header->num_cpus) {
+		fprintf(stderr, "stream_info_size too small\n");
+		print_usage_and_die(argc, argv, EXIT_FAILURE);
+	}
+
 	payload = (const uint8_t *) &file_header[1];
 	stream_info = (const struct owl_stream_info *)
 		      (payload + file_header->stream_info_offs);
 	tracebuf = payload + file_header->tracebuf_offs;
-	tracebuf_size = file_header->tracebuf_size;
 	sched_info_buf = (const uint8_t *)
 			 (payload + file_header->sched_info_offs);
 	sched_info_size = file_header->sched_info_size;
@@ -2096,30 +2148,11 @@ main(int argc, char *argv[])
 	if (printer->print_prologue)
 		printer->print_prologue(file_header);
 
-	source_info_hashmap = source_hash_init();
-	{
-		(void)tracebuf_size;
-		int cpu_start, cpu_end, cpu;
-		const char *sysroot = options.sysroot ?: DEFAULT_SYSROOT;
-
-		if (options.have_cpu) {
-			cpu_start = options.cpu;
-			cpu_end = options.cpu + 1;
-		} else {
-			cpu_start = 0;
-			cpu_end = file_header->num_cpus;
-		}
-
-		for (cpu = cpu_start; cpu < cpu_end; cpu++) {
-			const struct owl_stream_info
-				*cpu_si = &stream_info[cpu];
-			dump_trace(&tracebuf[cpu_si->offs], cpu_si->size,
-				   sched_info_buf, sched_info_size,
-				   sched_info_entries, map_info, map_info_size,
-				   sysroot, printer, cpu);
-		}
-	}
-	source_hash_fini(source_info_hashmap);
+	dump_trace(file_header, tracebuf,
+		   sched_info_buf, sched_info_size, sched_info_entries,
+		   stream_info,
+		   map_info, map_info_size,
+		   &options, printer);
 
 	if (printer->print_epilogue)
 		printer->print_epilogue(file_header);
