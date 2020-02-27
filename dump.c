@@ -1975,6 +1975,9 @@ print_file_header(const struct owl_trace_file_header *fh)
 	printf("FILE HEADER\n");
 	printf("magic:\t\t\t%lx\n", fh->magic);
 	printf("trace_format:\t\t%u\n", fh->trace_format);
+	printf("host_name:\t\t%s\n", fh->hostname);
+	printf("start_time:\t\t%lu\n", fh->start_time);
+	printf("stop_time:\t\t%lu\n", fh->stop_time);
 	printf("num_cpus:\t\t%u\n", fh->num_cpus);
 	printf("stream_info_size:\t%lu\n", fh->stream_info_size);
 	printf("stream_info_offs:\t%lu\n", fh->stream_info_offs);
