@@ -7,8 +7,8 @@ extern "C" {
 #include <stddef.h>
 extern void *source_hash_init();
 extern void source_hash_fini(void *p);
-extern bool source_hash_find(void *p, const char *binary, uint64_t vaddr, char *buf, size_t buflen);
-extern void source_hash_insert(void *p, const char *binary, uint64_t vaddr, const char *value);
+extern bool source_hash_find(void *p, const char *binary, uint64_t paddr, char *buf, size_t buflen, uint64_t *vaddr);
+extern void source_hash_insert(void *p, const char *binary, uint64_t paddr, const char *value, uint64_t vaddr);
 #ifdef __cplusplus
 };
 #endif

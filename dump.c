@@ -62,6 +62,7 @@ static void *source_info_hashmap;
 struct dump_trace {
 	uint64_t			timestamp;
 	union owl_trace			trace;
+	uint64_t			sched_in_timestamp;
 	const struct owl_sched_info_full *sched_info;
 };
 
@@ -96,6 +97,8 @@ struct print_args {
 	uint64_t start_time;
 
 	int cpu;
+
+	float clock_freq;
 };
 
 struct map_search_key {
@@ -106,7 +109,7 @@ struct map_search_key {
 typedef long long unsigned int llu_t;
 typedef void (* const printfn_t)(struct print_args *, struct callstack *);
 typedef void (* const print_schedfn_t)
-	(const struct owl_sched_info_full *, uint64_t, uint64_t, int, char);
+	(const struct owl_sched_info_full *, uint64_t, uint64_t, float, int, char);
 typedef void (* const print_prologuefn_t)
 	(const struct owl_trace_file_header *file_header);
 typedef void (* const print_epiloguefn_t)
@@ -423,6 +426,18 @@ rel_timestamp(struct print_args *a, const struct dump_trace *trace)
 	return trace->timestamp - a->start_time;
 }
 
+static llu_t
+sched_in_rel_timestamp(struct print_args *a, const struct dump_trace *trace)
+{
+	return trace->sched_in_timestamp - a->start_time;
+}
+
+static llu_t
+sched_out_rel_timestamp(struct print_args *a, const struct dump_trace *trace)
+{
+	return trace->sched_info->base.timestamp - a->start_time;
+}
+
 /* End print helper functions */
 
 static void
@@ -446,12 +461,11 @@ print_ecall_trace(struct print_args *a, struct callstack *c)
 	       rel_timestamp(a, this_frame(c)->enter_trace), a->cpu, type, function, name, a->delim);
 }
 
-/* TODO: popen() is SLOW!!!. Should use a hashtable. */
 static bool
 source_info(struct print_args *a, struct callstack *c,
-	    char *buf, size_t bufsize, const char *binary, llu_t poffs)
+	    char *buf, size_t bufsize, const char *binary,
+	    uint64_t poffs, uint64_t *vaddr)
 {
-	llu_t vaddr;
 	FILE *stream;
 	char cmdline[2048], tmp[64], *p;
 	char path[1024];
@@ -459,8 +473,11 @@ source_info(struct print_args *a, struct callstack *c,
 	struct stat statbuf;
 	int ret;
 
-	if (source_hash_find(source_info_hashmap, binary, poffs, buf, bufsize))
+	if (source_hash_find(source_info_hashmap, binary, poffs, buf, bufsize, vaddr))
 		return true;
+
+	/* Set fallback here */
+	*vaddr = poffs;
 
 	/* Path */
 	pos = 0;
@@ -481,7 +498,7 @@ source_info(struct print_args *a, struct callstack *c,
 		return false;
 
 	if (this_frameno(c) > 0) {
-		vaddr = poffs;
+		*vaddr = poffs;
 		goto have_vaddr;
 	}
 
@@ -495,7 +512,7 @@ source_info(struct print_args *a, struct callstack *c,
 		return false;
 	if (pos >= sizeof(cmdline) + 25)
 		return false;
-	if ((ret = snprintf(&cmdline[pos], 25, " 0x%llx", poffs)) <= 0)
+	if ((ret = snprintf(&cmdline[pos], 25, " 0x%llx", (llu_t) poffs)) <= 0)
 		return false;
 	pos += ret;
 	if (pos >= sizeof(cmdline))
@@ -510,7 +527,7 @@ source_info(struct print_args *a, struct callstack *c,
 		return false;
 	}
 	pclose(stream);
-	vaddr = strtoull(tmp, NULL, 0);
+	*vaddr = strtoull(tmp, NULL, 0);
 
 have_vaddr:
 	/* addr2line */
@@ -521,7 +538,8 @@ have_vaddr:
 	pos += strnlen(path, 1024);
 	if (pos >= sizeof(cmdline))
 		return false;
-	ret = snprintf(&cmdline[pos], sizeof(cmdline) - pos, " 0x%llx ", vaddr);
+	ret = snprintf(&cmdline[pos], sizeof(cmdline) - pos, " 0x%llx ",
+		       (llu_t) *vaddr);
 	if (ret <= 0)
 		return false;
 	pos += ret;
@@ -551,7 +569,7 @@ have_vaddr:
 	}
 
 	// Cache the result
-	source_hash_insert(source_info_hashmap, binary, poffs, buf);
+	source_hash_insert(source_info_hashmap, binary, poffs, buf, *vaddr);
 
 	return true;
 }
@@ -565,25 +583,25 @@ print_return_trace(struct print_args *a, struct callstack *c)
 	/* TODO: Support hcall if we add support for it in H/W */
 	/* TODO: Print time delta */
 	const char *type;
-	uint64_t pc, offset;
+	uint64_t pc, offset, vaddr;
 	const char *binary = "'none'";
 
 	pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
 	offset = pc;
 
-	if (frame_down(c)->enter_trace == NULL ||
-	    frame_down(c)->enter_trace->trace.kind == 7 ) {
+	if (frame_down(c)->enter_trace == NULL) {
 		/* Return from other task */
 		type = "scdret";
-	} else
-	type = return_type(frame_down(c));
+	} else {
+		type = return_type(frame_down(c));
+	}
 	binary = binary_name(a, c, &pc, &offset);
 
-	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset);
+	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset, &vaddr);
 	printf("@=[%020llu] cpu=%03d %-5s\t\tpc=[%016llx] retval=[%05d] file=[%s+0x%llx] source=[%s]%c",
 	       rel_timestamp(a, this_frame(c)->return_trace), a->cpu, type,
 	       (llu_t) pc, this_frame(c)->return_trace->trace.ret.regval, binary,
-	       (llu_t) offset, have_source_info ? buf : "'none'", a->delim);
+	       (llu_t) vaddr, have_source_info ? buf : "'none'", a->delim);
 }
 
 static void
@@ -633,8 +651,9 @@ print_pchi_trace(struct print_args *a, struct callstack *c)
 static void
 filtered_print_sched_info(const struct owl_sched_info_full *entry,
 			  uint64_t timestamp, uint64_t until,
-			  int cpu, char delim)
+			  float clock_freq, int cpu, char delim)
 {
+	(void)clock_freq;
 	assert(entry->comm[OWL_TASK_COMM_LEN - 1] == '\0');
 
 	if (entry->base.cpu != cpu)
@@ -802,7 +821,7 @@ static void
 print_flame_return_trace(struct print_args *a, struct callstack *c)
 {
 	/* TODO: Support hcall if we add support for it in H/W */
-	uint64_t pc, offset;
+	uint64_t pc, offset, vaddr;
 	char buf[2048];
 	bool have_source_info;
 	const char *binary = "'none'";
@@ -810,10 +829,10 @@ print_flame_return_trace(struct print_args *a, struct callstack *c)
 	pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
 	offset = pc;
 	binary = binary_name(a, c, &pc, &offset);
-	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset);
+	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset, &vaddr);
 
 	if (have_source_info)
-		printf("file://%s+0x%llx [%s]%c", binary, (llu_t) offset, buf, a->delim);
+		printf("file://%s+0x%llx [%s]%c", binary, (llu_t) vaddr, buf, a->delim);
 	else
 		printf("file://%s+0x%llx%c", binary, (llu_t) offset, a->delim);
 }
@@ -842,11 +861,12 @@ static printfn_t real_print_flame_trace[8] = {
 static void
 flame_print_sched_info(const struct owl_sched_info_full *entry,
 			 uint64_t timestamp, uint64_t until,
-			 int cpu, char delim)
+			 float clock_freq, int cpu, char delim)
 {
 	(void)entry;
 	(void)timestamp;
 	(void)until;
+	(void)clock_freq;
 	(void)cpu;
 	(void)delim;
 }
@@ -859,6 +879,12 @@ static struct printer flame_printer = {
 /* End FlameChart friendly output format */
 
 /* Begin KUTrace JSON format */
+#define KUTRACE_ARC		     -3
+#define KUTRACE_SCHED		0x10000
+#define KUTRACE_KERNEL		0x00000
+#define KUTRACE_IRQ		0x00500
+#define KUTRACE_FAULT		0x00400
+#define KUTRACE_SYSCALL		0x00800
 
 static void
 kutrace_print_ecall_trace(struct print_args *a, struct callstack *c)
@@ -868,11 +894,10 @@ kutrace_print_ecall_trace(struct print_args *a, struct callstack *c)
 	bool exit_p;
 	const char *enter_type = NULL, *enter_name = NULL;
 	int exit_event = 0x20000;
-	const float freq = 100000000.0f;
 
 	describe_frame_enter(this_frame(c), &enter_type, &enter_name, NULL, &function);
 
-	ts_enter = rel_timestamp(a, this_frame(c)->enter_trace) / freq;
+	ts_enter = rel_timestamp(a, this_frame(c)->enter_trace) / a->clock_freq;
 	/* TODO: What should this be? Next sched??? */
 	ts_return = 0.001f;
 
@@ -891,16 +916,9 @@ kutrace_print_ecall_trace(struct print_args *a, struct callstack *c)
 static void
 kutrace_print_return_trace(struct print_args *a, struct callstack *c)
 {
-	char buf[2048];
-	bool have_source_info;
-
-	/* TODO: Support hcall if we add support for it in H/W */
-	/* TODO: Print time delta */
-	const char *type;
-	uint64_t pc, offset;
-	const char *binary = "'none'";
-	/* TODO: Don't make frequency a constant */
-	const float freq = 100000000.0f;
+	float ts_enter, ts_return;
+	int enter_cpu, return_cpu;
+	bool descheduled_p;
 
 	const char *enter_type, *enter_name;
 	unsigned enter_function;
@@ -911,9 +929,17 @@ kutrace_print_return_trace(struct print_args *a, struct callstack *c)
 
 	describe_frame_enter(frame_down(c), &enter_type, &enter_name, NULL, &enter_function);
 
+#if 0
+	char buf[2048];
+	bool have_source_info;
+	const char *type;
+	const char *binary = "'none'";
+	uint64_t vaddr;
+	uint64_t offset;
+	uint64_t pc;
+
 	pc = full_pc(this_frame(c), a->pc_bits, a->sign_extend_pc);
 	offset = pc;
-
 	if (frame_down(c)->enter_trace == NULL) {
 		/* Return from other task */
 		type = "scdret";
@@ -921,33 +947,69 @@ kutrace_print_return_trace(struct print_args *a, struct callstack *c)
 		type = return_type(frame_down(c));
 	}
 	binary = binary_name(a, c, &pc, &offset);
-
-	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset);
+	have_source_info = source_info(a, c, buf, sizeof(buf), binary, offset, &vaddr);
+#endif
 
 	switch (frame_down(c)->enter_trace->trace.kind) {
 	case OWL_TRACE_KIND_UECALL:
-		enter_function |= 0x800;
+		enter_function |= KUTRACE_SYSCALL;
 		break;
 	case OWL_TRACE_KIND_SECALL:
-		enter_function |= 0x000; /* is_kernel ??? */
+		enter_function |= KUTRACE_KERNEL;
 		break;
 	case OWL_TRACE_KIND_EXCEPTION:
 		if (frame_down(c)->enter_trace->trace.exception.cause & 128) {
-			enter_function |= 0x500; /* is_irq */
 			enter_function &= ~128;
+			enter_function |= KUTRACE_IRQ;
 		} else {
-			enter_function |= 0x400; /* is_fault */
+			enter_function |= KUTRACE_FAULT;
 		}
 		break;
 	default:
 		break;
 	}
 
-	float ts_enter =   rel_timestamp(a, frame_down(c)->enter_trace)  / freq;
-	float ts_return =  rel_timestamp(a, this_frame(c)->return_trace) / freq;
+	enter_cpu  = frame_down(c)->enter_trace->sched_info->base.cpu;
+	return_cpu = this_frame(c)->return_trace->sched_info->base.cpu;
+
+	ts_enter  = rel_timestamp(a, frame_down(c)->enter_trace)  / a->clock_freq;
+	ts_return = rel_timestamp(a, this_frame(c)->return_trace) / a->clock_freq;
+
 	/* Format: time dur cpu pid rpcid event arg retval ipc name */
+
+	/* Were we de-scheduled during a syscall? */
+	{
+		const struct owl_sched_info_full *enter_sched =
+			frame_down(c)->enter_trace->sched_info;
+		const struct owl_sched_info_full *return_sched =
+			this_frame(c)->return_trace->sched_info;
+		descheduled_p =
+			(enter_sched->base.timestamp !=
+			 return_sched->base.timestamp) ||
+			(enter_sched->base.cpu !=
+			 return_sched->base.cpu);
+	}
+	if (descheduled_p) {
+		/* Draw event until descheduled */
+		ts_return = sched_out_rel_timestamp(a, frame_down(c)->enter_trace) / a->clock_freq;
+		printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s\"],\n",
+		       ts_enter, ts_return - ts_enter, enter_cpu, c->task->pid, 0,
+		       enter_function, enter_function,
+		       this_frame(c)->return_trace->trace.ret.regval, 0, enter_name);
+
+		/* Draw arc to next scheduled */
+		ts_enter  = sched_out_rel_timestamp(a, frame_down(c)->enter_trace) / a->clock_freq;
+		ts_return = rel_timestamp(a, this_frame(c)->return_trace) / a->clock_freq;
+		printf("[%12.8f, %10.8f, %d, %d, %d, %d, %d, %d, %d, \"%s\"],\n",
+		       ts_enter, ts_return - ts_enter, enter_cpu, c->task->pid, 0,
+		       KUTRACE_ARC, return_cpu, 0, 0, enter_name);
+
+		/* Adjust enter time to return */
+		ts_enter  = sched_in_rel_timestamp(a, this_frame(c)->return_trace) / a->clock_freq;
+		ts_return = rel_timestamp(a, this_frame(c)->return_trace) / a->clock_freq;
+	}
 	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s\"],\n",
-	       ts_enter, ts_return - ts_enter, a->cpu, c->task->pid, 0,
+	       ts_enter, ts_return - ts_enter, return_cpu, c->task->pid, 0,
 	       enter_function, enter_function,
 	       this_frame(c)->return_trace->trace.ret.regval, 0, enter_name);
 }
@@ -964,7 +1026,7 @@ kutrace_print_invalid_trace(struct print_args *a, struct callstack *c)
 
 static void
 kutrace_print_sched_info(const struct owl_sched_info_full *entry,
-			 uint64_t timestamp, uint64_t until,
+			 uint64_t timestamp, uint64_t until, float clock_freq,
 			 int cpu, char delim)
 {
 	(void)delim;
@@ -975,11 +1037,10 @@ kutrace_print_sched_info(const struct owl_sched_info_full *entry,
 	if (entry->base.cpu != cpu)
 		return;
 
-	const float freq = 100000000.0f;
-	float ts_enter =   ((float) timestamp) / freq;
-	float ts_return =  ((float) until) / freq;
+	float ts_enter =   ((float) timestamp) / clock_freq;
+	float ts_return =  ((float) until) / clock_freq;
 
-	event = 0x10000 | entry->base.pid;
+	event = KUTRACE_SCHED | entry->base.pid;
 
 	/* Format: time dur cpu pid rpcid event arg retval ipc name */
 	printf("[%12.8f, %10.8f, %d, %d, %d, %u, %d, %d, %d, \"%s/%d\"],\n",
@@ -1022,6 +1083,7 @@ kutrace_print_prologue(const struct owl_trace_file_header *file_header)
 static void
 kutrace_print_epilogue(const struct owl_trace_file_header *file_header)
 {
+	(void)file_header;
 	printf("\
 [999.0, 0.0, 0, 0, 0, 0, 0, 0, 0, \"\"]\n\
 ]}\n");
@@ -1103,8 +1165,6 @@ sort_maps(struct owl_map_info *maps, size_t num_map_entries)
 {
 	qsort(maps, num_map_entries, sizeof(*maps), sort_compare_maps);
 }
-
-static bool task_eq_p(const struct owl_task *a, const struct owl_task *b);
 
 static bool
 try_find_pchi(const struct dump_trace *traces, size_t ntraces, size_t i,
@@ -1229,6 +1289,7 @@ struct options {
 	bool have_cpu;
 	int cpu;
 	const char *sysroot;
+	float clock_freq;
 };
 
 static void
@@ -1302,19 +1363,6 @@ sched_task_eq_p(const struct owl_sched_info *a,
 	if (strncmp(a->comm, b->comm, OWL_TASK_COMM_LEN))
 		return false;
 #endif
-	return true;
-}
-
-static bool
-task_eq_p(const struct owl_task *a,
-	  const struct owl_task *b)
-{
-	if (a->pid != b->pid)
-		return false;
-	if (a->ppid != b->ppid)
-		return false;
-	if (strncmp(a->comm, b->comm, OWL_TASK_COMM_LEN))
-		return false;
 	return true;
 }
 
@@ -1477,6 +1525,7 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 	union owl_trace trace, prev_timestamp = { 0 };
 	uint64_t absclocks = 0, msbclocks = 0, prev_absclocks = 0;
 	uint64_t next_sched = 0ULL;
+	uint64_t sched_in_timestamp = 0;
 	unsigned prev_lsb_timestamp = 0;
 	const struct owl_sched_info_full *curr_sched = &sched_info[0];
 	const struct owl_sched_info_full
@@ -1508,6 +1557,9 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		assert(absclocks >= prev_absclocks);
 		prev_absclocks = absclocks;
 
+		if (absclocks > next_sched)
+			sched_in_timestamp = curr_sched->base.timestamp;
+
 		while (absclocks > next_sched && curr_sched < last_sched) {
 			const struct owl_sched_info_full *tmp = curr_sched;
 			do {
@@ -1526,21 +1578,24 @@ preprocess_traces(struct dump_trace *out, const uint8_t *tracebuf,
 		out[i].trace = trace;
 		out[i].timestamp = absclocks;
 		out[i].sched_info = curr_sched;
+		out[i].sched_in_timestamp = sched_in_timestamp;
 		if (trace.kind == OWL_TRACE_KIND_PCHI)
 			*pchi_traces++ = &out[i];
 	}
 }
 
+const struct owl_sched_info_full default_sched = { 0 };
+
 /* Initialize with dummy stack traces */
 const struct dump_trace default_enter0 = {
-	.timestamp = ~0, .trace.kind = 7
+	.timestamp = ~0, .trace.kind = 7, .sched_info = &default_sched
 };
 const struct dump_trace default_enter1 = {
-	.timestamp = ~0, .trace.kind = 7
+	.timestamp = ~0, .trace.kind = 7, .sched_info = &default_sched
+
 };
 const struct dump_trace default_enter2 = {
-	.timestamp = ~0,
-	.trace.kind = 7
+	.timestamp = ~0, .trace.kind = 7, .sched_info = &default_sched
 };
 
 static void
@@ -1592,10 +1647,10 @@ __compute_initial_frame_level(struct dump_trace *traces, size_t ntraces)
 		kind = traces[i].trace.kind;
 		switch (kind) {
 		case OWL_TRACE_KIND_SECALL:
-			initial = 1;
+			initial = 2;
 			break;
 		case OWL_TRACE_KIND_UECALL:
-			initial = 0;
+			initial = 1;
 			break;
 		default:
 			continue;
@@ -1664,9 +1719,9 @@ dump_trace_one_cpu(const uint8_t *trace_stream, size_t trace_stream_size,
 		   size_t sched_info_entries,
 		   struct callstack *callstacks, const size_t ntasks,
 		   struct owl_map_info *maps, size_t map_info_size,
-		   const char *sysroot, struct printer *printer, const int cpu)
+		   const char *sysroot, struct printer *printer, const int cpu,
+		   float clock_freq)
 {
-
 	size_t i = 0;
 	const size_t num_map_entries = map_info_size / sizeof(*maps);
 	int to_frame = 0, from_frame; /* See comment about callstack/frame levels */
@@ -1706,7 +1761,7 @@ dump_trace_one_cpu(const uint8_t *trace_stream, size_t trace_stream_size,
 	/* Print first scheduled task */
 	printer->print_sched(traces[0].sched_info, 0,
 			     traces[0].sched_info->base.timestamp - traces[0].timestamp,
-			     cpu, '\n');
+			     clock_freq, cpu, '\n');
 
 	for (i = 0; i < ntraces; i++) {
 		bool task_switch = i && (prev_sched != traces[i].sched_info);
@@ -1732,13 +1787,14 @@ dump_trace_one_cpu(const uint8_t *trace_stream, size_t trace_stream_size,
 				prev_sched,
 				prev_sched->base.timestamp - traces[0].timestamp,
 				next_sched->base.timestamp - traces[0].timestamp,
+				clock_freq,
 				cpu, '\n');
 				prev_sched++;
 			}
 			printer->print_sched(traces[i].sched_info,
 					prev_sched->base.timestamp - traces[0].timestamp,
 					traces[i].sched_info->base.timestamp - traces[0].timestamp,
-					cpu, '\n');
+					clock_freq, cpu, '\n');
 		}
 		prev_sched = traces[i].sched_info;
 
@@ -1811,7 +1867,8 @@ dump_trace_one_cpu(const uint8_t *trace_stream, size_t trace_stream_size,
 				.delim			= '\n',
 				.start_time		= traces[0].timestamp,
 				.sysroot		= sysroot,
-				.cpu			= cpu
+				.cpu			= cpu,
+				.clock_freq		= clock_freq
 			};
 			printer->print_trace[traces[i].trace.kind](&args, curr_callstack);
 		}
@@ -1843,13 +1900,13 @@ dump_trace_one_cpu(const uint8_t *trace_stream, size_t trace_stream_size,
 		printer->print_sched(prev_sched,
 				prev_sched->base.timestamp - traces[0].timestamp,
 				next_sched->base.timestamp - traces[0].timestamp,
-				cpu, '\n');
+				clock_freq, cpu, '\n');
 	}
 	/* Fake end time for last sched info entry. */
 	printer->print_sched(prev_sched,
 			prev_sched->base.timestamp - traces[0].timestamp,
 			prev_sched->base.timestamp - traces[0].timestamp + 1,
-			cpu, '\n');
+			clock_freq, cpu, '\n');
 
 	free(traces);
 	free(pchi_traces);
@@ -1865,6 +1922,7 @@ dump_trace(const struct owl_trace_file_header *file_header,
 	   struct options *options, struct printer *printer)
 {
 	const char *sysroot = options->sysroot ?: DEFAULT_SYSROOT;
+	float clock_freq = options->clock_freq;
 	int cpu_start, cpu_end, cpu;
 	struct owl_sched_info_full *sched_info;
 	size_t ntasks;
@@ -1916,7 +1974,7 @@ dump_trace(const struct owl_trace_file_header *file_header,
 				   sched_info, sched_info_entries,
 				   callstacks, ntasks,
 				   map_info, map_info_size,
-				   sysroot, printer, cpu);
+				   sysroot, printer, cpu, clock_freq);
 	}
 
 	source_hash_fini(source_info_hashmap);
@@ -1961,7 +2019,7 @@ print_usage_and_die(int argc, char **argv, int retval)
 
 	f = retval == EXIT_SUCCESS ? stdout : stderr;
 	fprintf(f,
-		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame | kutrace]] [[--cpu | -c] cpu] [[--sysroot | -s] sysroot] [--help | -h] FILE\n",
+		"usage: %s [--verbose | -v] [[--format | -f] [normal | flame | kutrace]] [[--cpu | -c] cpu] [[--sysroot | -s] sysroot] [[--clock-freq | -F] clockfreq] [--help | -h] FILE\n",
 		argv[0]);
 
 	exit(retval);
@@ -1981,12 +2039,13 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 			{"verbose", no_argument,       NULL,  'v' },
 			{"format",  required_argument, NULL,  'f' },
 			{"cpu",     required_argument, NULL,  'c' },
+			{"clock-freq", required_argument, NULL, 'F' },
 			{"sysroot", required_argument, NULL,  's' },
 			{"help",    no_argument,       NULL,  'h' },
 			{0,         0,                 NULL,  0   }
 		};
 
-		c = getopt_long(argc, argv, "vf:c:s:h", long_options,
+		c = getopt_long(argc, argv, "vf:c:F:s:h", long_options,
 				&option_index);
 		if (c == -1)
 			break;
@@ -2013,6 +2072,10 @@ parse_options_or_die(int argc, char **argv, struct options *options)
 			case 'c':
 				options->have_cpu = true;
 				options->cpu = (int) strtol(optarg, NULL, 0);
+				break;
+			case 'F':
+				options->clock_freq =
+					(float) strtol(optarg, NULL, 0);
 				break;
 			case 's':
 				options->sysroot = optarg;
@@ -2090,7 +2153,7 @@ main(int argc, char *argv[])
 	int fd;
 	size_t buf_size, sched_info_size, sched_info_entries;
 	size_t map_info_size;
-	struct options options = { 0 };
+	struct options options = { 0, .clock_freq = 100000000.0f };
 	struct printer *printer;
 
 	/* Disable line buffering */
