@@ -111,8 +111,9 @@ do_stop(struct options *options, struct state *state)
 static int
 do_dump(struct options *options, struct state *state)
 {
-#if 0
 	(void)options;
+	(void)state;
+#if 0
 
 	int ret = 0;
 	uint64_t offs;
@@ -240,11 +241,14 @@ fini(struct options *options, struct state *state)
 
 void usage(const char *argv0)
 {
+	(void)argv0;
 	//fprintf(stderr, "usage: %s trace [start|stop|dump]\n", argv0);
 }
 
 int main(int argc, char *argv[])
 {
+	(void)argc;
+	(void)argv;
 	int ret;
 
 	struct options options = INIT_OPTIONS;
