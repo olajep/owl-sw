@@ -270,7 +270,7 @@ do_dump(struct options *options, struct state *state)
 			memcpy(timestr, "notime", sizeof("notime"));
 		} else {
 			strftime(timestr, sizeof(timestr),
-				 "%Y-%m-%dT%H%M%S", tm);
+				 "%Y-%m-%d_T%H%M%S", tm);
 		}
 
 		snprintf(filename, sizeof(filename), "%s-%s.owldump",
