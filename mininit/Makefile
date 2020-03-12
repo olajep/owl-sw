@@ -1,2 +1,3 @@
-../init: init.c libc.c
-	riscv64-unknown-linux-gnu-gcc -I.. -I~/riscv/sysroot/usr/include -static init.c libc.c -o ../init
+../init: init.c
+	riscv64-unknown-linux-gnu-gcc -I.. -static init.c -o ../init
+	riscv64-unknown-linux-gnu-strip -g ../init

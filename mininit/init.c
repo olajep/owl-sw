@@ -213,7 +213,7 @@ init(struct options *options, struct state *state)
 {
 	int ret;
 
-	ret = _open(options->path, O_RDWR);
+	ret = open(options->path, O_RDWR);
 	if (ret < 0) {
 		printf("open error %d\n", ret);
 		//perror(options->path);
@@ -231,7 +231,7 @@ fini(struct options *options, struct state *state)
 	(void)options;
 
 	if (state->fd > -1) {
-		_close(state->fd);
+		close(state->fd);
 		state->fd = -1;
 	}
 
@@ -271,6 +271,8 @@ int main(int argc, char *argv[])
 		printf("Fail ioctl? %d\n", ret);
 		usage(argv[0]);
 	}
+
+	printf("Tracing enabled entering mainloop\n");
 
 	while (true) {
 		;
